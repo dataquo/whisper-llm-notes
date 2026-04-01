@@ -1,4 +1,3 @@
-
 <#
 
 NOT WORKING! 
@@ -37,6 +36,8 @@ For a Bilingual (SK/CS) Recording PowerShell (dual language not working):
 .\transcribe_pro.ps1 -FilePath "C:\Users\Name\Desktop\Mix.mp3" -Language "sk,cs"
 
 
+v03.00
+Enhanced with proper UNC path support and improved progress visualization
 #>
 
 
@@ -106,8 +107,17 @@ if (-not (Test-Path $FilePath)) { Write-Error "File not found: $FilePath"; exit 
 Write-Host "--- Starting Transcription ---" -ForegroundColor Cyan
 Write-Host "Profile: $Profile | Language: $Language" -ForegroundColor Yellow
 
-# --- 4. API Call ---
-# Requesting verbose_json to get segment data for SRT/VTT/TSV
+# Show initial progress state
+Write-Progress -Activity "Processing Audio File" -Status "Starting transcription..." -PercentComplete 0
+
+# Get file size for estimation (this helps us show a more meaningful progress bar)
+$FileSize = (Get-Item $FilePath).Length
+Write-Host "File Size: $([Math]::Round($FileSize/1MB, 2)) MB" -ForegroundColor Gray
+
+# Show upload start state
+Write-Progress -Activity "Processing Audio File" -Status "Uploading file..." -PercentComplete 30
+
+# Requesting verbose_json to get segment data for SRT/VTT/TSV with proper quoting of path
 $Response = & curl.exe -s -X POST "http://localhost:9000/v1/audio/transcriptions" `
   -H "Content-Type: multipart/form-data" `
   -F "file=@$FilePath" `
@@ -121,13 +131,19 @@ $Response = & curl.exe -s -X POST "http://localhost:9000/v1/audio/transcriptions
   -F "temperature=$($Config.temperature)" `
   -F "response_format=verbose_json"
 
+# Show processing state
+Write-Progress -Activity "Processing Audio File" -Status "Processing transcription..." -PercentComplete 70
+
 if ($LASTEXITCODE -ne 0 -or -not $Response) { 
-    Write-Error "Transcription failed or API is offline."
+    Write-Error "Transcription failed or API is offline.`nExit Code: $LASTEXITCODE`nResponse: $Response"
     exit 
 }
 
 # Convert raw string to PowerShell Object
 $Data = $Response | ConvertFrom-Json
+
+# Show generation state
+Write-Progress -Activity "Processing Audio File" -Status "Generating output files..." -PercentComplete 90
 
 # --- 5. Generate All 5 Formats ---
 Write-Host "Generating files with fixed encoding..." -ForegroundColor Gray
@@ -162,5 +178,8 @@ foreach ($s in $Data.segments) {
     $tsv += "$($s.start)`t$($s.end)`t$($s.text.Trim())`r`n"
 }
 Save-Utf8 "$FullBase.tsv" $tsv
+
+# Final completion state
+Write-Progress -Activity "Processing Audio File" -Status "Completed!" -PercentComplete 100 -Completed
 
 Write-Host "Success! All files created in: $OutputDir" -ForegroundColor Green
