@@ -46,7 +46,9 @@ v03.01
 - sending request to the native whisperx endpoint instead of the openai-compatibility layer to ensure all parameters (like diarization) are properly processed and reflected in the output files.
 - automated the Container Restart after each transcription to flush GPU VRAM and ensure consistent performance for batch processing multiple files in a row.
 
-
+v03.02
+- he API is not "seeing" them. Because the API doesn't see the language, it has to guess (which is slower) and often gets it wrong, especially with short clips or mixed language content. By explicitly telling the API the language, we can speed up processing and improve accuracy.
+- Updated the script to send the language parameter correctly as the URL to the native whisperx endpoint, ensuring that the model processes the audio with the intended language context for better accuracy and faster transcription times.
 #>
 
 
@@ -90,12 +92,17 @@ $ProfileSettings = @{
         "vad_offset"     = "0.2"
         "initial_prompt" = "Toto je nahrávka z meetingu."
         "min_speakers"   = "2"        
+        "max_speakers"   = "5"        
         "temperature"    = "0.0"
     }
     "phone" = @{
         "diarize"        = "true"
-        "vad_filter"     = "false" # Disabled to catch quiet phone voices
+        "vad_filter"     = "true"   # WhisperX's diarization engine (Pyannote) heavily relies on the VAD (Voice Activity Detection) map to know where segments begin and end. If you turn the VAD filter OFF, you are sending a raw "blob" of audio to the diarization model.
+        "vad_onset"      = "0.5"    # Less sensitive. The diarization engine (Pyannote) needs a solid "chunk" of audio (usually 0.5s or more) to identify a voice. If the segments are too short, it fails to identify who is speaking.
+        "vad_offset"     = "0.5"    # Less sensitive        
         "initial_prompt" = "Přepis nahrávky telefonického hovoru. Hlasy mohou být zkreslené."
+        "min_speakers"   = "2"        
+        "max_speakers"   = "2"      # Hard limit to 2 people   
         "temperature"    = "0.0"
     }
     "distant" = @{
@@ -120,19 +127,13 @@ Write-Host "Profile: $Profile | Language: $Language" -ForegroundColor Yellow
 # Show initial progress state
 Write-Progress -Activity "Processing Audio File" -Status "Starting transcription..." -PercentComplete 20
 
-# Get file size for estimation (this helps us show a more meaningful progress bar)
-$FileSize = (Get-Item $FilePath).Length
-Write-Host "File Size: $([Math]::Round($FileSize/1MB, 2)) MB" -ForegroundColor Gray
-
-# Show upload start state
-Write-Progress -Activity "Processing Audio File" -Status "Uploading file..." -PercentComplete 30
 
 # Requesting verbose_json to get segment data for SRT/VTT/TSV with proper quoting of path
 <#
 The endpoint you are using (/v1/audio/transcriptions) is the OpenAI-compatibility layer. While it is great for standard tools, 
 it often ignores "extra" parameters like diarize because they aren't part of the official OpenAI spec.
 #>
-<#
+<# v03.00 - original call to openai-compatibility layer (not working with diarization) 
 $Response = & curl.exe -s -X POST "http://localhost:9000/v1/audio/transcriptions" `
   -H "Content-Type: multipart/form-data" `
   -F "file=@$FilePath" `
@@ -151,6 +152,10 @@ $Response = & curl.exe -s -X POST "http://localhost:9000/v1/audio/transcriptions
 # --- 4. API Call (Updated to Native Endpoint) ---
 Write-Host "Sending request to Native WhisperX Endpoint..." -ForegroundColor Gray
 
+
+<# v03.01 - original call to native whisperx endpoint with all parameters (working with diarization but language not properly processed)
+# Note: The native endpoint uses 'audio_file' instead of 'file'
+
 $Response = & curl.exe -s -X POST "http://localhost:9000/asr" `
   -H "Content-Type: multipart/form-data" `
   -F "audio_file=@$FilePath" `
@@ -165,8 +170,54 @@ $Response = & curl.exe -s -X POST "http://localhost:9000/asr" `
   -F "vad_onset=$($Config.vad_onset)" `
   -F "vad_offset=$($Config.vad_offset)" `
   -F "temperature=$($Config.temperature)" 
+#>
 
-# Note: The native endpoint uses 'audio_file' instead of 'file'
+
+# v03.02 - updated call to native whisperx endpoint with proper language parameter (working with diarization and correct language processing)
+# Prepare the URL with all parameters as Query Strings (with proper URL encoding)
+$BaseUrl = "http://localhost:9000/asr"
+
+# Helper function to URL-encode strings
+function ConvertTo-UrlEncoded($String) {
+    [System.Web.HttpUtility]::UrlEncode($String)
+}
+
+# Build URL with properly encoded parameters
+$QueryParams = @{
+    "task"            = "transcribe"
+    "language"        = $Language
+    "model"           = "large-v3"                          # You can change this to "large-v3" or "medium" or "small" if you want faster processing with less accuracy
+    "diarize"         = $Config.diarize
+    "min_speakers"    = $Config.min_speakers
+    "max_speakers"    = $Config.max_speakers
+    "initial_prompt"  = $Config.initial_prompt
+    "vad_filter"      = $Config.vad_filter
+    "vad_onset"       = $Config.vad_onset
+    "vad_offset"      = $Config.vad_offset
+    "temperature"     = $Config.temperature
+}
+
+$QueryString = (($QueryParams.GetEnumerator() | ForEach-Object { "$($_.Key)=$(ConvertTo-UrlEncoded $_.Value)" }) -join "&")
+$FullUrl = "$BaseUrl`?$QueryString"
+
+
+# Write BaseURL
+# Write-Host "Base API URL: $BaseUrl" -ForegroundColor Green
+
+# Write FullURL
+Write-Host "Full API URL: $FullUrl" -ForegroundColor Green
+
+
+# Execute the call (Sending ONLY the audio file as form data)
+$Response = & curl.exe -s -X POST $FullUrl `
+  -H "accept: application/json" `
+  -H "Content-Type: multipart/form-data" `
+  -F "audio_file=@$FilePath"
+
+
+# Write Response for debugging
+Write-Host "API Response: $Response" -ForegroundColor Green
+
 
 # Show processing state
 Write-Progress -Activity "Processing Audio File" -Status "Processing transcription..." -PercentComplete 70
