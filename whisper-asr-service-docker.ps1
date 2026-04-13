@@ -1,6 +1,6 @@
 <#
 
-WORKING! 
+ WORKING! 
 
 
 Based on: https://gemini.google.com/share/6b1dddd87280
@@ -73,6 +73,13 @@ v03.04
 
 
 **Inline comments added throughout FFmpeg preprocessing code section.**
+
+v03.05
+- Fixed FFREPORT environment variable parsing error that caused log file creation to fail with "Invalid argument" message.
+- Added explicit FFREPORT configuration before each FFmpeg command to ensure proper log file generation.
+- Log files are now created with the same naming pattern as processed audio files, with timestamp appended before .log extension:
+- Example: `O2-Rozhovor.PHONE-NORM_HP-LW-SP-LN.20260414-001224.log`
+- FFmpeg report level set to 48 (warning and above) for concise logging.
 #>
 
 
@@ -82,11 +89,12 @@ param(
     [string]$FilePath,
 
     [Parameter(Mandatory=$false)]
-    [string]$Language = "cs", # Defaulting to Czech based on your last run
+    [ValidateSet("meeting", "phone", "distant")]
+    [string]$Profile = "phone", # Defaulting to phone based on your last run
 
     [Parameter(Mandatory=$false)]
-    [ValidateSet("meeting", "phone", "distant")]
-    [string]$Profile = "phone" # Defaulting to phone based on your last run
+    [ValidateSet("cs", "sk", "en", "auto")]
+    [string]$Language # Optional language code (e.g., "cs", "sk") - if not provided, API auto-detects
 )
 
 # --- 1. Fix Console & Encoding for Czech/Slovak Characters ---
@@ -235,6 +243,10 @@ ffmpeg.exe -i "$FilePath" -af "highpass=f=200, lowpass=f=3500, speechnorm=e=10:r
 "@
     }
 }
+
+# v03.05 - Set FFREPORT environment variable for FFmpeg logging with timestamped filename
+$LogFileName = "$OutputDir\$BaseName.$ProcessedSuffix.$(Get-Date -Format 'yyyyMMdd-HHmmss').log"
+$env:FFREPORT = "file='$LogFileName':level=48"
 
 $FfMpegResult = Invoke-Expression $FfMpegCmd
 
