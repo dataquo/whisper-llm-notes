@@ -50,6 +50,7 @@ v03.02
 - the API is not "seeing" them. Because the API doesn't see the language, it has to guess (which is slower) and often gets it wrong, especially with short clips or mixed language content. By explicitly telling the API the language, we can speed up processing and improve accuracy.
 - Updated the script to send the language parameter correctly as the URL to the native whisperx endpoint, ensuring that the model processes the audio with the intended language context for better accuracy and faster transcription times.
 
+
 v03.03
 - Integrated FFmpeg audio preprocessing before upload to WhisperX API:
   - Profile-specific pipelines with unique filter chains for each use case
@@ -63,6 +64,13 @@ v03.03
 | phone | `PHONE-NORM_HP-LW-SP-LN` | highpass(200Hz), lowpass(3500Hz), speechnorm, loudnorm | Narrow speech bandwidth for phone calls |
 | meeting | `MEETING-NORM_HP-LW-DN` | highpass(80Hz), lowpass(8000Hz), dynaudnorm, loudnorm | Full speech range with dynamic normalization |
 | distant | `DISTANT-NORM_HP-LP-AC-SN` | highpass(200Hz), lowpass(4000Hz), acompressor, speechnorm, loudnorm | Compressor + SN for noisy environments |
+
+
+v03.04
+- Integrated FFmpeg audio preprocessing before upload to WhisperX API:
+  - Output format: WAV (PCM 16-bit LE) or MP3 (libmp3lame, 64kbps) at 16kHz sample rate
+  - Switchable output via commented/uncommented codec parameters
+
 
 **Inline comments added throughout FFmpeg preprocessing code section.**
 #>
@@ -135,17 +143,34 @@ $BaseName = [System.IO.Path]::GetFileNameWithoutExtension($FilePath)
 $OutputDir = [System.IO.Path]::GetDirectoryName($FilePath)
 $FullBase = Join-Path $OutputDir $BaseName
 
-# v03.03 - FFmpeg preprocessing integration: define processed file naming based on profile (WAV PCM uncompressed)
+# v03.04 - FFmpeg preprocessing integration: define processed file naming based on profile (switchable WAV/MP3)
 switch ($Profile) {
     "phone"     { $ProcessedSuffix = "PHONE-NORM_HP-LW-SP-LN" }
     "meeting"   { $ProcessedSuffix = "MEETING-NORM_HP-LW-DN" }
     "distant"   { $ProcessedSuffix = "DISTANT-NORM_HP-LP-AC-SN" }
     default     { $ProcessedSuffix = "${Profile}-processed" }
 }
-$TempProcessedFile = "$OutputDir\$BaseName.$ProcessedSuffix.wav"
 
-# v03.03 - FFmpeg WAV encoding parameters (PCM 16-bit LE)
-$FfMpegWavParams = "-acodec pcm_s16le"
+
+
+
+# v03.04 - FFmpeg WAV encoding parameters (PCM 16-bit LE) - NCOMMENT TO USE WAV
+# $FfMpegWavParams = "-acodec pcm_s16le"
+
+# v03.04 - FFmpeg MP3 encoding parameters (libmp3lame, 64kbps) - UNCOMMENT TO USE MP3
+$FfMpegMp3Params = "-acodec libmp3lame -b:a 64k"
+
+
+# v03.04 - Determine output format based on active codec and set file path
+if ($FfMpegWavParams) {
+    $OutputFormat = "wav"
+    $FfMpegOutputParams = $FfMpegWavParams
+} else {
+    $OutputFormat = "mp3"
+    $FfMpegOutputParams = $FfMpegMp3Params
+}
+$TempProcessedFile = "$OutputDir\$BaseName.$ProcessedSuffix.$OutputFormat"
+
 
 if (-not (Test-Path $FilePath)) { Write-Error "File not found: $FilePath"; exit }
 
@@ -186,27 +211,27 @@ Write-Host "Preprocessing audio file with FFmpeg ($Profile profile)..." -Foregro
 
 switch ($Profile) {
     "phone" {
-        # v03.03 - Phone: Speech-focused, narrow bandwidth (200-3500Hz), speech normalization -> WAV PCM uncompressed
+        # v03.03 - Phone: Speech-focused, narrow bandwidth (200-3500Hz), speech normalization -> WAV PCM uncompressed or MP3 (libmp3lame, 64kbps)
         $FfMpegCmd = @"
-ffmpeg.exe -i "$FilePath" -af "highpass=f=200, lowpass=f=3500, speechnorm=e=10:r=0.0005:l=1, loudnorm=I=-16:TP=-1.5:LRA=11" $FfMpegWavParams -ar 16000 "$TempProcessedFile" -y
+ffmpeg.exe -i "$FilePath" -af "highpass=f=200, lowpass=f=3500, speechnorm=e=10:r=0.0005:l=1, loudnorm=I=-16:TP=-1.5:LRA=11" $FfMpegOutputParams -ar 16000 "$TempProcessedFile" -y
 "@
     }
     "meeting" {
-        # v03.03 - Meeting: Full speech range (80-8000Hz), dynamic normalization for variable room acoustics -> WAV PCM uncompressed
+        # v03.03 - Meeting: Full speech range (80-8000Hz), dynamic normalization for variable room acoustics -> WAV PCM uncompressed or MP3 (libmp3lame, 64kbps)
         $FfMpegCmd = @"
-ffmpeg.exe -i "$FilePath" -af "highpass=f=80, lowpass=f=8000, dynaudnorm=p=0.9:m=50:s=5:g=15, loudnorm=I=-16:TP=-1.5:LRA=11" $FfMpegWavParams -ar 16000 "$TempProcessedFile" -y
+ffmpeg.exe -i "$FilePath" -af "highpass=f=80, lowpass=f=8000, dynaudnorm=p=0.9:m=50:s=5:g=15, loudnorm=I=-16:TP=-1.5:LRA=11" $FfMpegOutputParams -ar 16000 "$TempProcessedFile" -y
 "@
     }
     "distant" {
-        # v03.03 - Distant: Narrower bandwidth (200-4000Hz), compressor + speech normalization for noisy environments -> WAV PCM uncompressed
+        # v03.03 - Distant: Narrower bandwidth (200-4000Hz), compressor + speech normalization for noisy environments -> WAV PCM uncompressed or MP3 (libmp3lame, 64kbps)
         $FfMpegCmd = @"
-ffmpeg.exe -i "$FilePath" -af "highpass=f=200, lowpass=f=4000, acompressor=threshold=-20dB:ratio=10:attack=5:release=50:makeup=8, speechnorm=e=30:r=0.0001:l=1, loudnorm=I=-16:TP=-1.5:LRA=11" $FfMpegWavParams -ar 16000 "$TempProcessedFile" -y
+ffmpeg.exe -i "$FilePath" -af "highpass=f=200, lowpass=f=4000, acompressor=threshold=-20dB:ratio=10:attack=5:release=50:makeup=8, speechnorm=e=30:r=0.0001:l=1, loudnorm=I=-16:TP=-1.5:LRA=11" $FfMpegOutputParams -ar 16000 "$TempProcessedFile" -y
 "@
     }
     default {
-        # v03.03 - Default: Same as phone profile -> WAV PCM uncompressed
+        # v03.03 - Default: Same as phone profile -> WAV PCM uncompressed or MP3 (libmp3lame, 64kbps)
         $FfMpegCmd = @"
-ffmpeg.exe -i "$FilePath" -af "highpass=f=200, lowpass=f=3500, speechnorm=e=10:r=0.0005:l=1, loudnorm=I=-16:TP=-1.5:LRA=11" $FfMpegWavParams -ar 16000 "$TempProcessedFile" -y
+ffmpeg.exe -i "$FilePath" -af "highpass=f=200, lowpass=f=3500, speechnorm=e=10:r=0.0005:l=1, loudnorm=I=-16:TP=-1.5:LRA=11" $FfMpegOutputParams -ar 16000 "$TempProcessedFile" -y
 "@
     }
 }
