@@ -1,6 +1,6 @@
 <#
 
-NOT WORKING! 
+WORKING! 
 
 
 Based on: https://gemini.google.com/share/6b1dddd87280
@@ -47,8 +47,24 @@ v03.01
 - automated the Container Restart after each transcription to flush GPU VRAM and ensure consistent performance for batch processing multiple files in a row.
 
 v03.02
-- he API is not "seeing" them. Because the API doesn't see the language, it has to guess (which is slower) and often gets it wrong, especially with short clips or mixed language content. By explicitly telling the API the language, we can speed up processing and improve accuracy.
+- the API is not "seeing" them. Because the API doesn't see the language, it has to guess (which is slower) and often gets it wrong, especially with short clips or mixed language content. By explicitly telling the API the language, we can speed up processing and improve accuracy.
 - Updated the script to send the language parameter correctly as the URL to the native whisperx endpoint, ensuring that the model processes the audio with the intended language context for better accuracy and faster transcription times.
+
+v03.03
+- Integrated FFmpeg audio preprocessing before upload to WhisperX API:
+  - Profile-specific pipelines with unique filter chains for each use case
+  - Loudness normalization to broadcast standard (-16 LUFS, TP=-1.5dB)
+  - Output format: WAV (PCM 16-bit LE) at 16kHz sample rate
+
+## Profile-Specific FFmpeg Pipelines:
+
+| Profile | Suffix | Filters | Description |
+|---------|--------|---------|-------------|
+| phone | `PHONE-NORM_HP-LW-SP-LN` | highpass(200Hz), lowpass(3500Hz), speechnorm, loudnorm | Narrow speech bandwidth for phone calls |
+| meeting | `MEETING-NORM_HP-LW-DN` | highpass(80Hz), lowpass(8000Hz), dynaudnorm, loudnorm | Full speech range with dynamic normalization |
+| distant | `DISTANT-NORM_HP-LP-AC-SN` | highpass(200Hz), lowpass(4000Hz), acompressor, speechnorm, loudnorm | Compressor + SN for noisy environments |
+
+**Inline comments added throughout FFmpeg preprocessing code section.**
 #>
 
 
@@ -62,7 +78,7 @@ param(
 
     [Parameter(Mandatory=$false)]
     [ValidateSet("meeting", "phone", "distant")]
-    [string]$Profile = "meeting"
+    [string]$Profile = "phone" # Defaulting to phone based on your last run
 )
 
 # --- 1. Fix Console & Encoding for Czech/Slovak Characters ---
@@ -119,6 +135,18 @@ $BaseName = [System.IO.Path]::GetFileNameWithoutExtension($FilePath)
 $OutputDir = [System.IO.Path]::GetDirectoryName($FilePath)
 $FullBase = Join-Path $OutputDir $BaseName
 
+# v03.03 - FFmpeg preprocessing integration: define processed file naming based on profile (WAV PCM uncompressed)
+switch ($Profile) {
+    "phone"     { $ProcessedSuffix = "PHONE-NORM_HP-LW-SP-LN" }
+    "meeting"   { $ProcessedSuffix = "MEETING-NORM_HP-LW-DN" }
+    "distant"   { $ProcessedSuffix = "DISTANT-NORM_HP-LP-AC-SN" }
+    default     { $ProcessedSuffix = "${Profile}-processed" }
+}
+$TempProcessedFile = "$OutputDir\$BaseName.$ProcessedSuffix.wav"
+
+# v03.03 - FFmpeg WAV encoding parameters (PCM 16-bit LE)
+$FfMpegWavParams = "-acodec pcm_s16le"
+
 if (-not (Test-Path $FilePath)) { Write-Error "File not found: $FilePath"; exit }
 
 Write-Host "--- Starting Transcription ---" -ForegroundColor Cyan
@@ -152,6 +180,45 @@ $Response = & curl.exe -s -X POST "http://localhost:9000/v1/audio/transcriptions
 # --- 4. API Call (Updated to Native Endpoint) ---
 Write-Host "Sending request to Native WhisperX Endpoint..." -ForegroundColor Gray
 
+# v03.03 - FFmpeg preprocessing integration: profile-specific pipeline selection
+# Preprocess audio file using FFmpeg before upload (profile-specific pipelines)
+Write-Host "Preprocessing audio file with FFmpeg ($Profile profile)..." -ForegroundColor Yellow
+
+switch ($Profile) {
+    "phone" {
+        # v03.03 - Phone: Speech-focused, narrow bandwidth (200-3500Hz), speech normalization -> WAV PCM uncompressed
+        $FfMpegCmd = @"
+ffmpeg.exe -i "$FilePath" -af "highpass=f=200, lowpass=f=3500, speechnorm=e=10:r=0.0005:l=1, loudnorm=I=-16:TP=-1.5:LRA=11" $FfMpegWavParams -ar 16000 "$TempProcessedFile" -y
+"@
+    }
+    "meeting" {
+        # v03.03 - Meeting: Full speech range (80-8000Hz), dynamic normalization for variable room acoustics -> WAV PCM uncompressed
+        $FfMpegCmd = @"
+ffmpeg.exe -i "$FilePath" -af "highpass=f=80, lowpass=f=8000, dynaudnorm=p=0.9:m=50:s=5:g=15, loudnorm=I=-16:TP=-1.5:LRA=11" $FfMpegWavParams -ar 16000 "$TempProcessedFile" -y
+"@
+    }
+    "distant" {
+        # v03.03 - Distant: Narrower bandwidth (200-4000Hz), compressor + speech normalization for noisy environments -> WAV PCM uncompressed
+        $FfMpegCmd = @"
+ffmpeg.exe -i "$FilePath" -af "highpass=f=200, lowpass=f=4000, acompressor=threshold=-20dB:ratio=10:attack=5:release=50:makeup=8, speechnorm=e=30:r=0.0001:l=1, loudnorm=I=-16:TP=-1.5:LRA=11" $FfMpegWavParams -ar 16000 "$TempProcessedFile" -y
+"@
+    }
+    default {
+        # v03.03 - Default: Same as phone profile -> WAV PCM uncompressed
+        $FfMpegCmd = @"
+ffmpeg.exe -i "$FilePath" -af "highpass=f=200, lowpass=f=3500, speechnorm=e=10:r=0.0005:l=1, loudnorm=I=-16:TP=-1.5:LRA=11" $FfMpegWavParams -ar 16000 "$TempProcessedFile" -y
+"@
+    }
+}
+
+$FfMpegResult = Invoke-Expression $FfMpegCmd
+
+if ($LASTEXITCODE -ne 0) { 
+    Write-Error "FFmpeg preprocessing failed. Check ffmpeg is installed and accessible.`nExit Code: $LASTEXITCODE"
+    exit 
+}
+
+Write-Host "Audio preprocessed successfully: $TempProcessedFile" -ForegroundColor Green
 
 <# v03.01 - original call to native whisperx endpoint with all parameters (working with diarization but language not properly processed)
 # Note: The native endpoint uses 'audio_file' instead of 'file'
@@ -195,6 +262,7 @@ $QueryParams = @{
     "vad_onset"       = $Config.vad_onset
     "vad_offset"      = $Config.vad_offset
     "temperature"     = $Config.temperature
+    # "beam_size"       = "2"                                  # Optional: Adjust beam size as large model fails. (default is 5, lower is faster but less accurate, higher is slower but more accurate)
 }
 
 $QueryString = (($QueryParams.GetEnumerator() | ForEach-Object { "$($_.Key)=$(ConvertTo-UrlEncoded $_.Value)" }) -join "&")
@@ -207,35 +275,70 @@ $FullUrl = "$BaseUrl`?$QueryString"
 # Write FullURL
 Write-Host "Full API URL: $FullUrl" -ForegroundColor Green
 
+# Write Temp Processed File Path
+Write-Host "Audio file for transcription: $TempProcessedFile" -ForegroundColor Green 
 
 # Execute the call (Sending ONLY the audio file as form data)
 $Response = & curl.exe -s -X POST $FullUrl `
   -H "accept: application/json" `
   -H "Content-Type: multipart/form-data" `
-  -F "audio_file=@$FilePath"
+  -F "audio_file=@$TempProcessedFile"
 
 
-# Write Response for debugging
-Write-Host "API Response: $Response" -ForegroundColor Green
+# Parse response as JSON for error handling
+$ApiResult = $null
 
-
-# Show processing state
-Write-Progress -Activity "Processing Audio File" -Status "Processing transcription..." -PercentComplete 70
-
-if ($LASTEXITCODE -ne 0 -or -not $Response) { 
-    Write-Error "Transcription failed or API is offline.`nExit Code: $LASTEXITCODE`nResponse: $Response"
+try {
+    $ApiResult = $Response | ConvertFrom-Json
+} catch {
+    # Response is not valid JSON - likely an API error message
+    Write-Host "API returned non-JSON response (possible error): $Response" -ForegroundColor Yellow
+    
+    if ($LASTEXITCODE -ne 0) { 
+        Write-Host "Transcription failed with exit code: $LASTEXITCODE" -ForegroundColor Red
+    }
+    
+    Write-Error "Transcription failed.`nExit Code: $LASTEXITCODE`nResponse: $Response"
     exit 
 }
 
-# Convert raw string to PowerShell Object
-$Data = $Response | ConvertFrom-Json
+# Check for API error messages in the JSON response (GPU errors, CUDA failures, etc.)
+if ($ApiResult.detail) {
+    if ($ApiResult.detail -match "(?i)(cuda|gpu|memory|device unavailable)") {
+        Write-Host "GPU error detected: $($ApiResult.detail)" -ForegroundColor Red
+        Write-Host "Skipping file generation and flushing GPU VRAM..." -ForegroundColor Yellow
+        
+        # Restart container to recover from GPU out-of-memory state
+        Write-Host "Flushing GPU VRAM by restarting Docker container..." -ForegroundColor DarkYellow
+        docker restart whisperx-api | Out-Null
+        Start-Sleep -Seconds 10
+        Write-Host "Ready for next file." -ForegroundColor Green
+        exit
+    } else {
+        # Non-GPU related error (e.g., validation errors)
+        Write-Error "Transcription failed.`nAPI Error: $($ApiResult.detail)"
+        exit 
+    }
+}
+
+# Show processing state
+Write-Progress -Activity "Processing Audio File" -Status "Processing transcription..." -PercentComplete 60
+
+
+if (-not $ApiResult.segments) { 
+    Write-Error "Transcription returned no segments.`nResponse: $($Response | ConvertTo-Json)"
+    exit 
+}
+
+# Use parsed result for file generation
+$Data = $ApiResult
 
 # Show generation state
-Write-Progress -Activity "Processing Audio File" -Status "Generating output files..." -PercentComplete 75
+Write-Progress -Activity "Processing Audio File" -Status "Generating output files..." -PercentComplete 70
 
 
 # --- 5. Generate All 5 Formats (Updated with Speaker Labels) ---
-Write-Host "Generating files with Speaker Labels..." -ForegroundColor Gray
+Write-Progress -Activity "Generating files with Speaker Labels..." -Status "Generating output files..." -PercentComplete 75
 
 # 1. JSON (Already contains speaker data)
 Write-Progress -Activity "Processing generated JSON File" -Status "Generating output files..." -PercentComplete 80
@@ -291,7 +394,7 @@ Start-Sleep -Seconds 1 # Small pause to ensure file is written before we read it
 
 
 # 5. TSV
-Write-Progress -Activity "Generating VTT File with different speakers" -Status "Generating output files..." -PercentComplete 99
+Write-Progress -Activity "Generating TSV File with different speakers" -Status "Generating output files..." -PercentComplete 99
 
 $tsv = "start`tend`tspeaker`ttext`r`n"
 foreach ($s in $Data.segments) {
@@ -301,7 +404,7 @@ Save-Utf8 "$FullBase.tsv" $tsv
 
 Start-Sleep -Seconds 1 # Small pause to ensure file is written before we read it again for other formatsStart-Sleep -Seconds 1 # Small pause to ensure file is written before we read it again for other formats
 
-# Final completion state
+# Processed audio files are kept for review/analysis. To delete automatically, remove this block.
 Write-Progress -Activity "Processing Audio File" -Status "Completed!" -PercentComplete 100 -Completed
 
 Write-Host "Success! All files created in: $OutputDir" -ForegroundColor Green
