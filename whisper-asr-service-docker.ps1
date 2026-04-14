@@ -114,6 +114,11 @@ v04.03
   - This language information is inserted into the SummaryPrompt to explicitly tell Ollama what language was detected
   - Ensures the summary MD file is generated in the correct detected language rather than inferring from content alone
   - TASK IMPLEMENTED CORRECTLY BUT DISCARTED BECAUSE API DOES NOT PROVIDE CORRECT LANGAUGE TO JSON 
+
+v04.04
+- Added transcription logging functionality: captures execution timestamp, profile settings, API parameters, full URL, query string, and timing summary
+- Log file naming now matches processed audio pattern: `ProcessedFile.WHISPER.YYYYMMDD-HHMMSS.log`
+
 #>
 
 
@@ -151,6 +156,119 @@ function Save-Utf8($path, $content) {
     [System.IO.File]::WriteAllText($path, $content, $Utf8NoBom)
 }
 
+# --- 2b. Logging Functions ---
+
+# Creates a new log file for this transcription run (JSON format for machine readability)
+function New-TranscriptionLog {
+    param(
+        [string]$BaseName,
+        [string]$OutputDir,
+        [string]$Profile,
+        [object]$Config,
+        [string]$Language,
+        [string]$FullUrl,
+        [string]$QueryString,
+        [string]$ProcessedFile,
+        [string]$TempProcessedFile
+    )
+    
+    # v04.04 - New log filename pattern: ProcessedFile.WHISPER.YYYYMMDD-HHmmss.log (matching processed audio file naming)
+    $TimestampSuffix = Get-Date -Format "yyyyMMdd-HHmmss"
+    # Extract just the base filename from TempProcessedFile, then append .WHISPER.timestamp.log suffix
+    $BaseFileName = [System.IO.Path]::GetFileNameWithoutExtension($FilePath)
+    $LogFileName = "$BaseFileName.WHISPER.$TimestampSuffix.log"
+    # Combine with output directory to get full path
+    $LogPath = [System.IO.Path]::Combine($OutputDir, $LogFileName)
+    
+    $Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss.fff"
+    $DayOfWeek = (Get-Date).ToString("dddd")
+    
+    # v04.04/v05.00 - Machine-readable JSON format for log file
+    $LogData = @{
+        script_version = "whisper-asr-service-docker.v04.04.ps1"
+        execution_time = $Timestamp
+        day_of_week = $DayOfWeek
+        
+        configuration_parameters = @{
+            profile = $Profile
+            diarize = $Config.diarize
+            vad_filter = $Config.vad_filter
+            vad_onset = $Config.vad_onset
+            vad_offset = $Config.vad_offset
+            min_speakers = $Config.min_speakers
+            max_speakers = $Config.max_speakers
+            initial_prompt = $Config.initial_prompt.Replace("`r`n", " ")
+            temperature = $Config.temperature
+        }
+        
+        api_parameters = @{
+            language = $Language
+            model = "large-v3"
+        }
+        
+        query_string = $QueryString
+        full_api_url = $FullUrl
+        
+        processing_information = @{
+            input_file = $FilePath
+            processed_file = $ProcessedFile
+        }
+    }
+    
+    # Write initial log file as JSON (will append to later)
+    $LogData | ConvertTo-Json -Depth 10 | Set-Content -Path $LogPath
+    
+    return $LogPath
+}
+
+# Appends timing information to the log file
+function Add-LogEntry {
+    param(
+        [string]$LogPath,
+        [string]$EventName,
+        [datetime]$Timestamp,
+        [int]$DurationSeconds = 0
+    )
+    
+    $Line = "@$(Get-Date -Format "yyyy-MM-dd HH:mm:ss") | Event: $EventName | Duration: ${DurationSeconds}s`r`n"
+    Add-Content -Path $LogPath -Value $Line
+}
+
+# Appends completion summary to the log file (JSON format)
+function Write-CompletionSummary {
+    param(
+        [string]$LogPath,
+        [datetime]$StartTime,
+        [datetime]$EndTime,
+        [int]$TotalSeconds
+    )
+    
+    # Read existing JSON and add timing data
+    $ExistingData = Get-Content $LogPath | ConvertFrom-Json
+    
+    # Create new object with all properties plus the new timing property
+    $UpdatedData = [PSCustomObject]@{
+        script_version = $ExistingData.script_version
+        execution_time = $ExistingData.execution_time
+        day_of_week = $ExistingData.day_of_week
+        configuration_parameters = $ExistingData.configuration_parameters
+        api_parameters = $ExistingData.api_parameters
+        query_string = $ExistingData.query_string
+        full_api_url = $ExistingData.full_api_url
+        processing_information = $ExistingData.processing_information
+        timing = @{
+            start_time = $StartTime.ToString("yyyy-MM-dd HH:mm:ss")
+            end_time = $EndTime.ToString("yyyy-MM-dd HH:mm:ss")
+            total_duration_seconds = $TotalSeconds
+        }
+    }
+    
+    # Write updated JSON back to file
+    $UpdatedData | ConvertTo-Json -Depth 10 | Set-Content -Path $LogPath
+    
+    Write-Host "Log file saved: $LogPath" -ForegroundColor Cyan
+}
+
 # --- 3. Profile Configurations ---
 $ProfileSettings = @{
     "meeting" = @{
@@ -183,7 +301,13 @@ $ProfileSettings = @{
 }
 
 
+
+
 Write-Host "`n ========================  File processing started  ========================" -ForegroundColor Green
+
+# --- Record Start Time for Logging ---
+$StartTime = Get-Date
+Write-Host "Transcription start time: $($StartTime.ToString("yyyy-MM-dd HH:mm:ss"))" -ForegroundColor Cyan
 
 $Config = $ProfileSettings[$Profile]
 $BaseName = [System.IO.Path]::GetFileNameWithoutExtension($FilePath)
@@ -280,8 +404,8 @@ ffmpeg.exe -i "$FilePath" -af "highpass=f=200, lowpass=f=3500, speechnorm=e=10:r
 # TEMPOARY COMMENT OUT TO TEST API CALL WITHOUT FFmpeg PREPROCESSING (SENDING ORIGINAL FILE INSTEAD OF PROCESSED FILE)
 
 # Check if JSON file already exists - skip to summarization if so
-if (-not (Test-Path "$FullBase.json")) {
-    
+    if (-not (Test-Path "$FullBase.json")) {
+
 
     # Requesting verbose_json to get segment data for SRT/VTT/TSV with proper quoting of path
     <#
@@ -353,6 +477,18 @@ if (-not (Test-Path "$FullBase.json")) {
     $QueryString = (($QueryParams.GetEnumerator() | ForEach-Object { "$($_.Key)=$(ConvertTo-UrlEncoded $_.Value)" }) -join "&")
     $FullUrl = "$BaseUrl`?$QueryString"
 
+    # Create the transcription log file with all parameters
+    $LogPath = New-TranscriptionLog `
+        -BaseName $BaseName `
+        -OutputDir $OutputDir `
+        -Profile $Profile `
+        -Config $Config `
+        -Language $Language `
+        -FullUrl $FullUrl `
+        -QueryString $QueryString `
+        -ProcessedFile $TempProcessedFile `
+        -TempProcessedFile $TempProcessedFile
+
 
     # Write BaseURL
     # Write-Host "Base API URL: $BaseUrl" -ForegroundColor Green
@@ -375,7 +511,7 @@ if (-not (Test-Path "$FullBase.json")) {
     Write-Host "Sending request to Native WhisperX Endpoint..." -ForegroundColor Gray
 
 
-    Write-Host "--- Starting Transcription ---" -ForegroundColor Cyan
+    Write-Host "Starting Transcription..." -ForegroundColor Cyan
     Write-Host "Profile: $Profile | Language: $Language" -ForegroundColor Yellow
 
     # Show initial progress state
@@ -432,6 +568,9 @@ if (-not (Test-Path "$FullBase.json")) {
         exit 
     }
     
+    # v04.04 - Record transcription end time immediately after successful API response, before container restart
+    $TranscriptionEndTime = Get-Date
+
     # Use parsed result for file generation
     $Data = $ApiResult
     
@@ -445,7 +584,6 @@ if (-not (Test-Path "$FullBase.json")) {
     Save-Utf8 "$FullBase.json" $Response
 
     Start-Sleep -Seconds 1 # Small pause to ensure file is written before we read it again for other formats
-
     
     # --- 6. Automate the Container Restart--
 
@@ -473,12 +611,6 @@ if (-not (Test-Path "$FullBase.json")) {
         Write-Error "Failed to read existing JSON file: $_" -ForegroundColor Red
         exit 
     }
-
-    # v04.03 - Language extraction for Ollama summarization
-    # Extract the detected language from the WhisperX API response stored in $Data.language field
-    # If the field exists, use its value; otherwise default to "auto-detected"
-    $DetectedLanguage = if ($Data.language) { $Data.language } else { "auto-detected" }
-    Write-Host "Detected transcript language: $DetectedLanguage" -ForegroundColor Cyan
 }
 
 
@@ -553,7 +685,22 @@ Write-Host "Success! All files TXT, SRT, VTT, and TSV created in: $OutputDir" -F
 
 
 
-# --- 7. Ollama Summarization Step ---
+# --- 7. Write completion summary to log file (after Whisper API, before Ollama) ---
+if ($LogPath -and (Test-Path $LogPath)) {
+    $TotalSeconds = [Math]::Round(($TranscriptionEndTime - $StartTime).TotalSeconds)
+    
+    try {
+        Write-CompletionSummary `
+            -LogPath $LogPath `
+            -StartTime $StartTime `
+            -EndTime $TranscriptionEndTime `
+            -TotalSeconds $TotalSeconds
+    } catch {
+        Write-Warning "Could not write completion summary to log: $_"
+    }
+}
+
+# --- 8. Ollama Summarization Step ---
 Write-Host "Starting to process generate summary with Ollama..." -ForegroundColor Cyan
 
 Write-Progress -Activity "Generating Summary with Ollama" -Status "Creating MD summary..." -PercentComplete 66
@@ -576,12 +723,6 @@ Rules:
 1. Include speaker names if possible (or speaker labels if not possible to deduce names)
 2. One of the speaker is Martin, another speaker can be derived from topic or transcript (if name mentioned)
 3. include timestamps if deemed relevant to the content of the conversation (e.g., important decisions, action items, topic changes) 
-
-    # v04.03 - Insert detected language into prompt for Ollama summarization
-    # This ensures the AI model knows exactly what language to use instead of inferring from content
-    TRANSCRIPT DETECTED LANGUAGE: $DetectedLanguage
-- The WhisperX API detected this transcript as being in: $DetectedLanguage
-- Please use this specific language for generating the summary file
 
 TRANSCRIPT TOPIC: $BaseName 
 - the initial number is hardcoded date in the format YYYY-MM-DD or YYMMDD, please always format the date as "DD MonthName YYYY" (e.g., 14 April 2024) in the summary file
@@ -616,6 +757,5 @@ try {
     Write-Warning "Ollama summarization failed: $_. Ensure Ollama is running and the model '$OllamaModel' is available."
 }
 
-Start-Sleep -Seconds 1 # Small pause before proceeding to next steps
 
 Write-Host "========================  File processing finished  ========================`n" -ForegroundColor Green
