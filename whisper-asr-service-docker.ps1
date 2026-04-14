@@ -108,6 +108,12 @@ v04.02
 - Now, the script properly loads and parses the existing JSON file to extract the necessary data for generating SRT, TXT, VTT, and TSV files even when skipping the transcription step.
 - added debug mode switch (-DebugMode) to enable verbose logging of API URLs, parameters, and other internal state information for troubleshooting and development purposes. When enabled, the script will output additional details about the API request being made, including the full URL with query parameters and the path of the audio file being processed. This can help identify issues with parameter encoding, file paths, or API endpoint configuration during testing and debugging.
 
+v04.03 
+- added language extraction from WhisperX JSON response for Ollama summarization:
+  - The `$DetectedLanguage` variable extracts the detected language code (`$Data.language`) from the JSON file created by WhisperX API
+  - This language information is inserted into the SummaryPrompt to explicitly tell Ollama what language was detected
+  - Ensures the summary MD file is generated in the correct detected language rather than inferring from content alone
+  - TASK IMPLEMENTED CORRECTLY BUT DISCARTED BECAUSE API DOES NOT PROVIDE CORRECT LANGAUGE TO JSON 
 #>
 
 
@@ -467,6 +473,12 @@ if (-not (Test-Path "$FullBase.json")) {
         Write-Error "Failed to read existing JSON file: $_" -ForegroundColor Red
         exit 
     }
+
+    # v04.03 - Language extraction for Ollama summarization
+    # Extract the detected language from the WhisperX API response stored in $Data.language field
+    # If the field exists, use its value; otherwise default to "auto-detected"
+    $DetectedLanguage = if ($Data.language) { $Data.language } else { "auto-detected" }
+    Write-Host "Detected transcript language: $DetectedLanguage" -ForegroundColor Cyan
 }
 
 
@@ -565,15 +577,11 @@ Rules:
 2. One of the speaker is Martin, another speaker can be derived from topic or transcript (if name mentioned)
 3. include timestamps if deemed relevant to the content of the conversation (e.g., important decisions, action items, topic changes) 
 
-
-Format: 
-- The summary file should be in markdown format with clear sections and bullet points where appropriate. 
-
-Language: 
-- The whole summary MD  file should be in the same language as the transcript file
-- if the transcript is in Czech, write the summary in Czech. If the transcript is in Slovak, write the summary in Slovak. If the transcript is in English, write the summary in English.
-- it will be either Czech or Slovak or English, always pick one and only one for the whole MD file 
-
+    # v04.03 - Insert detected language into prompt for Ollama summarization
+    # This ensures the AI model knows exactly what language to use instead of inferring from content
+    TRANSCRIPT DETECTED LANGUAGE: $DetectedLanguage
+- The WhisperX API detected this transcript as being in: $DetectedLanguage
+- Please use this specific language for generating the summary file
 
 TRANSCRIPT TOPIC: $BaseName 
 - the initial number is hardcoded date in the format YYYY-MM-DD or YYMMDD, please always format the date as "DD MonthName YYYY" (e.g., 14 April 2024) in the summary file
@@ -582,6 +590,15 @@ TRANSCRIPT TOPIC: $BaseName
 
 TRANSCRIPT CONTENT:
 $TranscriptContent
+
+Format: 
+- The summary file should be in markdown .MD format with clear sections and bullet points where appropriate. 
+
+Language: 
+- The whole summary MD  file should be in the same language as the transcript file
+- if the transcript is in Czech, write the summary in Czech. If the transcript is in Slovak, write the summary in Slovak. If the transcript is in English, write the summary in English.
+- it will be either Czech or Slovak or English, always pick one and only one for the whole MD file 
+
 "@
 
 try {
