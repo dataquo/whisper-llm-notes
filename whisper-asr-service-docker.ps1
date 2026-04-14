@@ -87,6 +87,11 @@ v03.06
 v04.00 
 - Added a new section to generate a summary of the transcript using the Ollama API and the gemma3:4b model. The summary is saved as a markdown (.MD) file in the same directory as the transcript, with the same base name.
 - The summary generation is done after chosen transcript file (JSON, TXT, SRT, VTT, TSV) have been created to ensure the full transcript content is available for summarization.
+
+v04.01 
+- reverting back to non-stream call for Ollama summarization to simplify the process and avoid issues with streaming responses in PowerShell. 
+- The script now waits for the full summary response before saving it to a file, ensuring that the complete summary is captured without complications from handling streamed data.
+- The summary prompt has been enhanced to include specific instructions for formatting, language consistency, and inclusion of speaker names and timestamps where relevant, to create a more structured and informative summary based on the transcript content.
 #>
 
 
@@ -225,7 +230,7 @@ Write-Host "Checking for existing processed file: $TempProcessedFile" -Foregroun
 
 if (Test-Path $TempProcessedFile) {
     Write-Host "Processed file already exists: $TempProcessedFile" -ForegroundColor Cyan
-    Write-Host "Skipping FFmpeg preprocessing..." -ForegroundColor Yellow
+    Write-Host "Skipping FFmpeg normalization..." -ForegroundColor Yellow
 } else {
     # v03.03 - FFmpeg preprocessing integration: profile-specific pipeline selection
     # Preprocess audio file using FFmpeg before upload (profile-specific pipelines)
@@ -333,9 +338,7 @@ Write-Host "Audio file for transcription: $TempProcessedFile" -ForegroundColor G
 
 # Execute the call (Sending ONLY the audio file as form data)
 
-<##>    
-#TEMP COMMENT TO TEST OLLAMA 
-
+<#    # temporary comment 
 $Response = & curl.exe -s -X POST $FullUrl `
   -H "accept: application/json" `
   -H "Content-Type: multipart/form-data" `
@@ -414,9 +417,9 @@ foreach ($s in $Data.segments) {
     $txt += "$speakerPrefix$($s.text.Trim())`r`n"
 }
 Save-Utf8 "$FullBase.txt" $txt
-
-Start-Sleep -Seconds 1 # Small pause to ensure file is written before we read it again for other formats
 <##>
+Start-Sleep -Seconds 1 # Small pause to ensure file is written before we read it again for other formats
+
 
 
 
@@ -479,7 +482,7 @@ Start-Sleep -Seconds 5 # Give the API a few seconds to boot back up for the next
 Write-Progress -Activity "Generating Summary with Ollama" -Status "Creating MD summary..." -PercentComplete 66
 
 $OllamaModel = "gemma3:4b"
-$TranscriptPath = "$FullBase.json"
+$TranscriptPath = "$FullBase.txt"
 
 # Read the transcript file content to include in the prompt
 if (Test-Path $TranscriptPath) {
@@ -517,32 +520,12 @@ $TranscriptContent
 "@
 
 try {
-    # Enable streaming to see model's thinking process in real-time
     $SummaryResponse = & curl.exe -s http://localhost:11434/api/generate `
         -H "Content-Type: application/json" `
-        -d (ConvertTo-Json @{model=$OllamaModel;prompt=$SummaryPrompt;stream=$true}) | 
-            ForEach-Object { $_ }  # Pass through each line as it arrives
+        -d (ConvertTo-Json @{model=$OllamaModel;prompt=$SummaryPrompt;stream=$false}) | ConvertFrom-Json
     
-    # Parse streamed responses and accumulate the final result
-    $accumulatedText = ""
-    $finalResponse = $null
-    
-    foreach ($line in $SummaryResponse) {
-        try {
-            $chunk = $line | ConvertFrom-Json
-            if ($chunk.response) {
-                $accumulatedText += $chunk.response
-            }
-            if ($chunk.done -eq $true) {
-                $finalResponse = $accumulatedText
-            }
-        } catch {
-            # Skip any non-JSON lines (like progress info from curl)
-        }
-    }
-    
-    if ($finalResponse) {
-        Save-Utf8 "$FullBase.md" $finalResponse
+    if ($SummaryResponse.response) {
+        Save-Utf8 "$FullBase.md" $SummaryResponse.response
         Write-Host "Summary created: $($FullBase).md" -ForegroundColor Green
     } else {
         Write-Warning "Ollama returned empty response. Check if Ollama is running with model '$OllamaModel'."
