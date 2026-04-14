@@ -83,6 +83,10 @@ v03.05
 
 v03.06
 - Added conditional check to skip FFmpeg preprocessing when processed .MP3 or .WAV files already exist, preventing redundant conversions and improving batch processing efficiency.
+
+v04.00 
+- Added a new section to generate a summary of the transcript using the Ollama API and the gemma3:4b model. The summary is saved as a markdown (.MD) file in the same directory as the transcript, with the same base name.
+- The summary generation is done after chosen transcript file (JSON, TXT, SRT, VTT, TSV) have been created to ensure the full transcript content is available for summarization.
 #>
 
 
@@ -329,6 +333,8 @@ Write-Host "Audio file for transcription: $TempProcessedFile" -ForegroundColor G
 
 # Execute the call (Sending ONLY the audio file as form data)
 
+<##>    
+#TEMP COMMENT TO TEST OLLAMA 
 
 $Response = & curl.exe -s -X POST $FullUrl `
   -H "accept: application/json" `
@@ -410,6 +416,7 @@ foreach ($s in $Data.segments) {
 Save-Utf8 "$FullBase.txt" $txt
 
 Start-Sleep -Seconds 1 # Small pause to ensure file is written before we read it again for other formats
+<##>
 
 
 
@@ -465,5 +472,85 @@ Write-Host "Success! All files created in: $OutputDir" -ForegroundColor Green
 
 Write-Host "Flushing GPU VRAM by restarting Docker container..." -ForegroundColor DarkYellow
 docker restart whisperx-api | Out-Null
-Start-Sleep -Seconds 10 # Give the API a few seconds to boot back up for the next run
+Start-Sleep -Seconds 5 # Give the API a few seconds to boot back up for the next run
+
+
+# --- 7. Ollama Summarization Step ---
+Write-Progress -Activity "Generating Summary with Ollama" -Status "Creating MD summary..." -PercentComplete 66
+
+$OllamaModel = "gemma3:4b"
+$TranscriptPath = "$FullBase.json"
+
+# Read the transcript file content to include in the prompt
+if (Test-Path $TranscriptPath) {
+    $TranscriptContent = Get-Content -Raw $TranscriptPath
+} else {
+    Write-Warning "Transcript file not found: $TranscriptPath. Skipping summary generation."
+    $TranscriptContent = ""
+}
+
+$SummaryPrompt = @"
+Please create a detailed structured summary of this audio transcript in the original language of the transcript file. 
+
+Rules:
+1. Include speaker names if possible (or speaker labels if not possible to deduce names)
+2. One of the speaker is Martin, another speaker can be derived from topic or transcript (if name mentioned)
+3. include timestamps if deemed relevant to the content of the conversation (e.g., important decisions, action items, topic changes) 
+
+
+Format: 
+- The summary file should be in markdown format with clear sections and bullet points where appropriate. 
+
+Language: 
+- The whole summary MD  file should be in the same language as the transcript file
+- if the transcript is in Czech, write the summary in Czech. If the transcript is in Slovak, write the summary in Slovak. If the transcript is in English, write the summary in English.
+- it will be either Czech or Slovak or English, always pick one and only one for the whole MD file 
+
+
+TRANSCRIPT TOPIC: $BaseName 
+- the initial number is hardcoded date in the format YYYY-MM-DD or YYMMDD, please always format the date as "DD MonthName YYYY" (e.g., 14 April 2024) in the summary file
+- based on the date,include the day of the week as well (e.g., Sunday, 14 April 2024)
+- the initial number is followed by a descriptive title that can be used to understand the topic of the conversation and potentially identify speakers 
+
+TRANSCRIPT CONTENT:
+$TranscriptContent
+"@
+
+try {
+    # Enable streaming to see model's thinking process in real-time
+    $SummaryResponse = & curl.exe -s http://localhost:11434/api/generate `
+        -H "Content-Type: application/json" `
+        -d (ConvertTo-Json @{model=$OllamaModel;prompt=$SummaryPrompt;stream=$true}) | 
+            ForEach-Object { $_ }  # Pass through each line as it arrives
+    
+    # Parse streamed responses and accumulate the final result
+    $accumulatedText = ""
+    $finalResponse = $null
+    
+    foreach ($line in $SummaryResponse) {
+        try {
+            $chunk = $line | ConvertFrom-Json
+            if ($chunk.response) {
+                $accumulatedText += $chunk.response
+            }
+            if ($chunk.done -eq $true) {
+                $finalResponse = $accumulatedText
+            }
+        } catch {
+            # Skip any non-JSON lines (like progress info from curl)
+        }
+    }
+    
+    if ($finalResponse) {
+        Save-Utf8 "$FullBase.md" $finalResponse
+        Write-Host "Summary created: $($FullBase).md" -ForegroundColor Green
+    } else {
+        Write-Warning "Ollama returned empty response. Check if Ollama is running with model '$OllamaModel'."
+    }
+} catch {
+    Write-Warning "Ollama summarization failed: $_. Ensure Ollama is running and the model '$OllamaModel' is available."
+}
+
+Start-Sleep -Seconds 1 # Small pause before proceeding to next steps
+
 Write-Host "Ready for next file." -ForegroundColor Green
