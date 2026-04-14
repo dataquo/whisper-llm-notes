@@ -1,6 +1,6 @@
 <#
 
- NOT WORKING! - abandoned
+ WORKING! 
 
 
 Based on: https://gemini.google.com/share/6b1dddd87280
@@ -83,7 +83,6 @@ v03.05
 
 v03.06
 - Added conditional check to skip FFmpeg preprocessing when processed .MP3 or .WAV files already exist, preventing redundant conversions and improving batch processing efficiency.
-- Added a new helper function ConvertTo-CurlFilePath() that converts file paths to curl-compatible format with proper handling of UNC paths and special characters, ensuring reliable file uploads from any location on the system. 
 #>
 
 
@@ -296,26 +295,7 @@ $BaseUrl = "http://localhost:9000/asr"
 # Helper function to URL-encode strings
 function ConvertTo-UrlEncoded($String) {
     [System.Web.HttpUtility]::UrlEncode($String)
-}
 
-# v03.06 - Load required .NET assemblies for HTTP operations
-Add-Type -AssemblyName System.Net.Http
-
-# v03.06 - Helper function to convert file paths for curl.exe (handles UNC paths and special characters)
-# Converts UNC paths like \\server\share\file.txt to file://server/share/file.txt WITHOUT encoding the entire URI
-function ConvertTo-CurlFilePath([string]$Path) {
-    # Check if path is a UNC path (starts with \\)
-    if ($Path -match '^\\\\[^\\]+\\') {
-        # Replace backslashes with forward slashes for URI format
-        $UriPath = $Path -replace '\\', '/'
-        
-        # Remove the leading double backslash and add file:// prefix
-        return "file://$($UriPath.Substring(1))"
-    } else {
-        # For regular local paths, curl handles them natively with @filename syntax
-        # Return empty string to indicate use raw path
-        return ""
-    }
 }
 
 # Build URL with properly encoded parameters
@@ -348,110 +328,12 @@ Write-Host "Full API URL: $FullUrl" -ForegroundColor Green
 Write-Host "Audio file for transcription: $TempProcessedFile" -ForegroundColor Green 
 
 # Execute the call (Sending ONLY the audio file as form data)
-# v03.06b - Use PowerShell's Invoke-WebRequest for reliable UNC path handling with curl.exe fallback
 
-function Send-AudioToApi {
-    param(
-        [string]$Url,
-        [string]$FilePath,
-        [hashtable]$Headers,
-        [hashtable]$FormData
-    )
-    
-    # Check if file is on a network share (UNC path)
-    $IsNetworkPath = $FilePath -match '^\\\\[^\\]+\\'
-    
-    try {
-        if ($IsNetworkPath) {
-            # For UNC paths, use PowerShell's Invoke-RestMethod with proper multipart form data
-            Write-Host "Using PowerShell web request for network path..." -ForegroundColor Yellow
-            
-            try {
-                # Create multipart form content using .NET types
-                $FormDataContent = New-Object System.Net.Http.MultipartFormDataContent
-                
-                # Add the audio file using proper UNC path handling via FileStream
-                $FileStream = New-Object System.IO.FileStream $FilePath, ([IO.FileMode]::Open), ([IO.FileAccess]::Read), ([IO.FileShare]::ReadWrite)
-                $FilePart = New-Object System.Net.Http.StreamContent($FileStream)
-                $FilePart.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]"application/octet-stream"
-                $FormDataContent.Add($FilePart, "audio_file", [System.IO.Path]::GetFileName($FilePath))
-                
-                # Add other form fields (if any - currently only audio file is sent)
-                foreach ($key in $FormData.Keys) {
-                    if ($key -ne "audio_file" -and $FormData[$key]) {
-                        $StringContent = New-Object System.Net.Http.StringContent($FormData[$key], [System.Text.Encoding]::UTF8, "text/plain; charset=utf-8")
-                        $FormDataContent.Add($StringContent, $key)
-                    }
-                }
-                
-                # Create HTTP request with proper headers
-                $RequestMessage = New-Object System.Net.Http.HttpRequestMessage("POST", $Url)
-                $RequestMessage.Content = $FormDataContent
-                
-                # Add custom headers
-                foreach ($header in $Headers.Keys) {
-                    $RequestMessage.Headers.Add($header, $Headers[$header])
-                }
-                
-                # Send request using HttpClient
-                $HttpClient = New-Object System.Net.Http.HttpClient
-                $Response = $HttpClient.SendAsync($RequestMessage).Result.Content.ReadAsStringAsync().Result
-                
-                return $Response
-            } catch {
-                Write-Error "HTTP operation failed: $_"
-                throw
-            } finally {
-                # Clean up the file stream
-                if ($FileStream) {
-                    $FileStream.Close()
-                    $FileStream.Dispose()
-                }
-            }
-        } else {
-            # For local paths, use curl.exe as before (faster for local files)
-            Write-Host "Using curl.exe for local path..." -ForegroundColor Yellow
-            
-            $CurlPathResult = ConvertTo-CurlFilePath $FilePath
-            
-            if ($CurlPathResult -eq "") {
-                # Local path - use raw path with @ prefix (curl handles this natively)
-                $AudioFileArg = "@$FilePath"
-            } else {
-                # UNC path detected by helper - use file:// URI without encoding
-                $AudioFileArg = "@$CurlPathResult"
-            }
-            
-            $Response = & curl.exe -s -X POST $Url `
-                -H "accept: application/json" `
-                -H "Content-Type: multipart/form-data" `
-                -F "audio_file=$AudioFileArg"
-            
-            return $Response
-        }
-    } catch {
-        Write-Error "Failed to send audio file to API: $_"
-        throw
-    }
-}
 
-# Prepare form data (only the audio file, other params are in URL)
-$FormData = @{
-    "audio_file" = ""  # Will be set by Send-AudioToApi
-}
-
-$Headers = @{
-    "accept" = "application/json"
-}
-
-# Execute the call using our helper function
-Write-Host "Sending audio file to WhisperX API..." -ForegroundColor Gray
-try {
-    $Response = Send-AudioToApi -Url $FullUrl -FilePath $TempProcessedFile -Headers $Headers -FormData $FormData
-} catch {
-    Write-Error "Failed to send audio file: $_"
-    exit 1
-}
+$Response = & curl.exe -s -X POST $FullUrl `
+  -H "accept: application/json" `
+  -H "Content-Type: multipart/form-data" `
+  -F "audio_file=@$TempProcessedFile"
 
 
 # Parse response as JSON for error handling
