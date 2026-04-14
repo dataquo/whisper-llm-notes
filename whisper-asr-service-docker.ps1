@@ -92,6 +92,22 @@ v04.01
 - reverting back to non-stream call for Ollama summarization to simplify the process and avoid issues with streaming responses in PowerShell. 
 - The script now waits for the full summary response before saving it to a file, ensuring that the complete summary is captured without complications from handling streamed data.
 - The summary prompt has been enhanced to include specific instructions for formatting, language consistency, and inclusion of speaker names and timestamps where relevant, to create a more structured and informative summary based on the transcript content.
+
+v04.01 
+- reverting back to non-stream call for Ollama summarization to simplify the process and avoid issues with streaming responses in PowerShell. 
+- The script now waits for the full summary response before saving it to a file, ensuring that the complete summary is captured without complications from handling streamed data.
+- The summary prompt has been enhanced to include specific instructions for formatting, language consistency, and inclusion of speaker names and timestamps where relevant, to create a more structured and informative summary based on the transcript content.
+
+v04.02 
+- added condions to check for existance of the files JSON and MD (summary) before processing the file. 
+- If the JSON file already exists, it will skip the transcription step and move directly to summarization (if the MD summary doesn't exist yet). 
+- If the MD summary already exists, it will skip both transcription and summarization for that file. 
+- This allows for more efficient batch processing by avoiding redundant work on files that have already been processed in previous runs of the script.
+- fixed generation of SRT, TXT, VTT, TSV files for cases when JSON file already exists and is being used as source for those formats. 
+- Previously, if the JSON file existed, the script would skip transcription but then fail to generate the other formats because it was looking for variables that were only set during the transcription step.
+- Now, the script properly loads and parses the existing JSON file to extract the necessary data for generating SRT, TXT, VTT, and TSV files even when skipping the transcription step.
+- added debug mode switch (-DebugMode) to enable verbose logging of API URLs, parameters, and other internal state information for troubleshooting and development purposes. When enabled, the script will output additional details about the API request being made, including the full URL with query parameters and the path of the audio file being processed. This can help identify issues with parameter encoding, file paths, or API endpoint configuration during testing and debugging.
+
 #>
 
 
@@ -106,7 +122,9 @@ param(
 
     [Parameter(Mandatory=$false)]
     [ValidateSet("cs", "sk", "en", "auto")]
-    [string]$Language # Optional language code (e.g., "cs", "sk") - if not provided, API auto-detects
+    [string]$Language, # Optional language code (e.g., "cs", "sk") - if not provided, API auto-detects
+
+    [switch]$DebugMode # Enable verbose/debug output when specified
 )
 
 # --- 1. Fix Console & Encoding for Czech/Slovak Characters ---
@@ -158,6 +176,9 @@ $ProfileSettings = @{
     }
 }
 
+
+Write-Host "`n ========================  File processing started  ========================" -ForegroundColor Green
+
 $Config = $ProfileSettings[$Profile]
 $BaseName = [System.IO.Path]::GetFileNameWithoutExtension($FilePath)
 $OutputDir = [System.IO.Path]::GetDirectoryName($FilePath)
@@ -192,45 +213,16 @@ if ($FfMpegWavParams) {
 $TempProcessedFile = "$OutputDir\$BaseName.$ProcessedSuffix.$OutputFormat"
 
 
-if (-not (Test-Path $FilePath)) { Write-Error "File not found: $FilePath"; exit }
-
-Write-Host "--- Starting Transcription ---" -ForegroundColor Cyan
-Write-Host "Profile: $Profile | Language: $Language" -ForegroundColor Yellow
-
-# Show initial progress state
-Write-Progress -Activity "Processing Audio File" -Status "Starting transcription..." -PercentComplete 20
 
 
-# Requesting verbose_json to get segment data for SRT/VTT/TSV with proper quoting of path
-<#
-The endpoint you are using (/v1/audio/transcriptions) is the OpenAI-compatibility layer. While it is great for standard tools, 
-it often ignores "extra" parameters like diarize because they aren't part of the official OpenAI spec.
-#>
-<# v03.00 - original call to openai-compatibility layer (not working with diarization) 
-$Response = & curl.exe -s -X POST "http://localhost:9000/v1/audio/transcriptions" `
-  -H "Content-Type: multipart/form-data" `
-  -F "file=@$FilePath" `
-  -F "model=whisper-1" `
-  -F "language=$Language" `
-  -F "initial_prompt=$($Config.initial_prompt)" `
-  -F "diarize=$($Config.diarize)" `
-  -F "min_speakers=$($Config.min_speakers)" `
-  -F "vad_filter=$($Config.vad_filter)" `
-  -F "vad_onset=$($Config.vad_onset)" `
-  -F "vad_offset=$($Config.vad_offset)" `
-  -F "temperature=$($Config.temperature)" `
-  -F "response_format=verbose_json"
-#>
 
-# --- 4. API Call (Updated to Native Endpoint) ---
-Write-Host "Sending request to Native WhisperX Endpoint..." -ForegroundColor Gray
 
 # v03.06 - Check if processed file already exists to skip redundant FFmpeg conversion
 Write-Host "Checking for existing processed file: $TempProcessedFile" -ForegroundColor Gray
 
 if (Test-Path $TempProcessedFile) {
     Write-Host "Processed file already exists: $TempProcessedFile" -ForegroundColor Cyan
-    Write-Host "Skipping FFmpeg normalization..." -ForegroundColor Yellow
+    Write-Host "Skipping FFmpeg preprocessing..." -ForegroundColor Yellow
 } else {
     # v03.03 - FFmpeg preprocessing integration: profile-specific pipeline selection
     # Preprocess audio file using FFmpeg before upload (profile-specific pipelines)
@@ -274,138 +266,214 @@ ffmpeg.exe -i "$FilePath" -af "highpass=f=200, lowpass=f=3500, speechnorm=e=10:r
         exit 
     }
 
-    Write-Host "Audio preprocessed successfully: $TempProcessedFile" -ForegroundColor Green
+    Write-Host "Success! Audio preprocessed successfully: $TempProcessedFile" -ForegroundColor Green
 }
 
-<# v03.01 - original call to native whisperx endpoint with all parameters (working with diarization but language not properly processed)
-# Note: The native endpoint uses 'audio_file' instead of 'file'
 
-$Response = & curl.exe -s -X POST "http://localhost:9000/asr" `
-  -H "Content-Type: multipart/form-data" `
-  -F "audio_file=@$FilePath" `
-  -F "task=transcribe" `
-  -F "language=$Language" `
-  -F "model=large-v3" `
-  -F "diarize=$($Config.diarize)" `
-  -F "min_speakers=$($Config.min_speakers)" `
-  -F "max_speakers=5" `
-  -F "initial_prompt=$($Config.initial_prompt)" `
-  -F "vad_filter=$($Config.vad_filter)" `
-  -F "vad_onset=$($Config.vad_onset)" `
-  -F "vad_offset=$($Config.vad_offset)" `
-  -F "temperature=$($Config.temperature)" 
-#>
+<##>
+# TEMPOARY COMMENT OUT TO TEST API CALL WITHOUT FFmpeg PREPROCESSING (SENDING ORIGINAL FILE INSTEAD OF PROCESSED FILE)
 
-
-# v03.02 - updated call to native whisperx endpoint with proper language parameter (working with diarization and correct language processing)
-# Prepare the URL with all parameters as Query Strings (with proper URL encoding)
-$BaseUrl = "http://localhost:9000/asr"
-
-# Helper function to URL-encode strings
-function ConvertTo-UrlEncoded($String) {
-    [System.Web.HttpUtility]::UrlEncode($String)
-
-}
-
-# Build URL with properly encoded parameters
-$QueryParams = @{
-    "task"            = "transcribe"
-    "language"        = $Language
-    "model"           = "large-v3"                          # You can change this to "large-v3" or "medium" or "small" if you want faster processing with less accuracy
-    "diarize"         = $Config.diarize
-    "min_speakers"    = $Config.min_speakers
-    "max_speakers"    = $Config.max_speakers
-    "initial_prompt"  = $Config.initial_prompt
-    "vad_filter"      = $Config.vad_filter
-    "vad_onset"       = $Config.vad_onset
-    "vad_offset"      = $Config.vad_offset
-    "temperature"     = $Config.temperature
-    # "beam_size"       = "2"                                  # Optional: Adjust beam size as large model fails. (default is 5, lower is faster but less accurate, higher is slower but more accurate)
-}
-
-$QueryString = (($QueryParams.GetEnumerator() | ForEach-Object { "$($_.Key)=$(ConvertTo-UrlEncoded $_.Value)" }) -join "&")
-$FullUrl = "$BaseUrl`?$QueryString"
-
-
-# Write BaseURL
-# Write-Host "Base API URL: $BaseUrl" -ForegroundColor Green
-
-# Write FullURL
-Write-Host "Full API URL: $FullUrl" -ForegroundColor Green
-
-# Write Temp Processed File Path
-Write-Host "Audio file for transcription: $TempProcessedFile" -ForegroundColor Green 
-
-# Execute the call (Sending ONLY the audio file as form data)
-
-<#    # temporary comment 
-$Response = & curl.exe -s -X POST $FullUrl `
-  -H "accept: application/json" `
-  -H "Content-Type: multipart/form-data" `
-  -F "audio_file=@$TempProcessedFile"
-
-
-# Parse response as JSON for error handling
-$ApiResult = $null
-
-try {
-    $ApiResult = $Response | ConvertFrom-Json
-} catch {
-    # Response is not valid JSON - likely an API error message
-    Write-Host "API returned non-JSON response (possible error): $Response" -ForegroundColor Yellow
+# Check if JSON file already exists - skip to summarization if so
+if (-not (Test-Path "$FullBase.json")) {
     
-    if ($LASTEXITCODE -ne 0) { 
-        Write-Host "Transcription failed with exit code: $LASTEXITCODE" -ForegroundColor Red
+
+    # Requesting verbose_json to get segment data for SRT/VTT/TSV with proper quoting of path
+    <#
+    The endpoint you are using (/v1/audio/transcriptions) is the OpenAI-compatibility layer. While it is great for standard tools, 
+    it often ignores "extra" parameters like diarize because they aren't part of the official OpenAI spec.
+    #>
+    <# v03.00 - original call to openai-compatibility layer (not working with diarization) 
+    $Response = & curl.exe -s -X POST "http://localhost:9000/v1/audio/transcriptions" `
+    -H "Content-Type: multipart/form-data" `
+    -F "file=@$FilePath" `
+    -F "model=whisper-1" `
+    -F "language=$Language" `
+    -F "initial_prompt=$($Config.initial_prompt)" `
+    -F "diarize=$($Config.diarize)" `
+    -F "min_speakers=$($Config.min_speakers)" `
+    -F "vad_filter=$($Config.vad_filter)" `
+    -F "vad_onset=$($Config.vad_onset)" `
+    -F "vad_offset=$($Config.vad_offset)" `
+    -F "temperature=$($Config.temperature)" `
+    -F "response_format=verbose_json"
+    #>
+
+    <# v03.01 - original call to native whisperx endpoint with all parameters (working with diarization but language not properly processed)
+    # Note: The native endpoint uses 'audio_file' instead of 'file'
+
+    $Response = & curl.exe -s -X POST "http://localhost:9000/asr" `
+    -H "Content-Type: multipart/form-data" `
+    -F "audio_file=@$FilePath" `
+    -F "task=transcribe" `
+    -F "language=$Language" `
+    -F "model=large-v3" `
+    -F "diarize=$($Config.diarize)" `
+    -F "min_speakers=$($Config.min_speakers)" `
+    -F "max_speakers=5" `
+    -F "initial_prompt=$($Config.initial_prompt)" `
+    -F "vad_filter=$($Config.vad_filter)" `
+    -F "vad_onset=$($Config.vad_onset)" `
+    -F "vad_offset=$($Config.vad_offset)" `
+    -F "temperature=$($Config.temperature)" 
+    #>
+
+
+    # v03.02 - updated call to native whisperx endpoint with proper language parameter (working with diarization and correct language processing)
+    # Prepare the URL with all parameters as Query Strings (with proper URL encoding)
+    $BaseUrl = "http://localhost:9000/asr"
+
+    # Helper function to URL-encode strings
+    function ConvertTo-UrlEncoded($String) {
+        [System.Web.HttpUtility]::UrlEncode($String)
+
+    }
+
+    # Build URL with properly encoded parameters
+    $QueryParams = @{
+        "task"            = "transcribe"
+        "language"        = $Language
+        "model"           = "large-v3"                          # You can change this to "large-v3" or "medium" or "small" if you want faster processing with less accuracy
+        "diarize"         = $Config.diarize
+        "min_speakers"    = $Config.min_speakers
+        "max_speakers"    = $Config.max_speakers
+        "initial_prompt"  = $Config.initial_prompt
+        "vad_filter"      = $Config.vad_filter
+        "vad_onset"       = $Config.vad_onset
+        "vad_offset"      = $Config.vad_offset
+        "temperature"     = $Config.temperature
+        # "beam_size"       = "2"                                  # Optional: Adjust beam size as large model fails. (default is 5, lower is faster but less accurate, higher is slower but more accurate)
+    }
+
+    $QueryString = (($QueryParams.GetEnumerator() | ForEach-Object { "$($_.Key)=$(ConvertTo-UrlEncoded $_.Value)" }) -join "&")
+    $FullUrl = "$BaseUrl`?$QueryString"
+
+
+    # Write BaseURL
+    # Write-Host "Base API URL: $BaseUrl" -ForegroundColor Green
+
+    # Debug mode logging (only shown when -DebugMode is specified)
+    if ($DebugMode) {
+        Write-Host "Full API URL: $FullUrl" -ForegroundColor Green
+    }
+
+    # Write Temp Processed File Path
+    Write-Host "Audio file for transcription: $TempProcessedFile" -ForegroundColor Green 
+
+
+
+
+    
+    if (-not (Test-Path $FilePath)) { Write-Error "File not found: $FilePath"; exit }
+
+    # --- 4. API Call (Updated to Native Endpoint) ---
+    Write-Host "Sending request to Native WhisperX Endpoint..." -ForegroundColor Gray
+
+
+    Write-Host "--- Starting Transcription ---" -ForegroundColor Cyan
+    Write-Host "Profile: $Profile | Language: $Language" -ForegroundColor Yellow
+
+    # Show initial progress state
+    Write-Progress -Activity "Processing Audio File" -Status "Starting transcription..." -PercentComplete 20
+
+    # Execute the call (Sending ONLY the audio file as form data)
+    $Response = & curl.exe -s -X POST $FullUrl `
+      -H "accept: application/json" `
+      -H "Content-Type: multipart/form-data" `
+      -F "audio_file=@$TempProcessedFile"
+
+    
+    # Parse response as JSON for error handling
+    $ApiResult = $null
+    
+    try {
+        $ApiResult = $Response | ConvertFrom-Json
+    } catch {
+        # Response is not valid JSON - likely an API error message
+        Write-Host "API returned non-JSON response (possible error): $Response" -ForegroundColor Yellow
+        
+        if ($LASTEXITCODE -ne 0) { 
+            Write-Host "Transcription failed with exit code: $LASTEXITCODE" -ForegroundColor Red
+        }
+        
+        Write-Error "Transcription failed.`nExit Code: $LASTEXITCODE`nResponse: $Response"
+        exit 
     }
     
-    Write-Error "Transcription failed.`nExit Code: $LASTEXITCODE`nResponse: $Response"
-    exit 
-}
+    # Check for API error messages in the JSON response (GPU errors, CUDA failures, etc.)
+    if ($ApiResult.detail) {
+        if ($ApiResult.detail -match "(?i)(cuda|gpu|memory|device unavailable)") {
+            Write-Host "GPU error detected: $($ApiResult.detail)" -ForegroundColor Red
+            Write-Host "Skipping file generation and flushing GPU VRAM..." -ForegroundColor Yellow
+            
+            # Restart container to recover from GPU out-of-memory state
+            Write-Host "Flushing GPU VRAM by restarting Docker container..." -ForegroundColor DarkYellow
+            docker restart whisperx-api | Out-Null
+            Start-Sleep -Seconds 10
+            Write-Host "Ready for next file." -ForegroundColor Green
+            exit
+        } else {
+            # Non-GPU related error (e.g., validation errors)
+            Write-Error "Transcription failed.`nAPI Error: $($ApiResult.detail)"
+            exit 
+        }
+    }
+    
+    # Show processing state
+    Write-Progress -Activity "Processing Audio File" -Status "Processing transcription..." -PercentComplete 50
+    
+    if (-not $ApiResult.segments) { 
+        Write-Error "Transcription returned no segments.`nResponse: $($Response | ConvertTo-Json)"
+        exit 
+    }
+    
+    # Use parsed result for file generation
+    $Data = $ApiResult
+    
+    # Show generation state
+    Write-Progress -Activity "Processing Audio File" -Status "Generating output files..." -PercentComplete 60
 
-# Check for API error messages in the JSON response (GPU errors, CUDA failures, etc.)
-if ($ApiResult.detail) {
-    if ($ApiResult.detail -match "(?i)(cuda|gpu|memory|device unavailable)") {
-        Write-Host "GPU error detected: $($ApiResult.detail)" -ForegroundColor Red
-        Write-Host "Skipping file generation and flushing GPU VRAM..." -ForegroundColor Yellow
-        
-        # Restart container to recover from GPU out-of-memory state
-        Write-Host "Flushing GPU VRAM by restarting Docker container..." -ForegroundColor DarkYellow
-        docker restart whisperx-api | Out-Null
-        Start-Sleep -Seconds 10
-        Write-Host "Ready for next file." -ForegroundColor Green
-        exit
-    } else {
-        # Non-GPU related error (e.g., validation errors)
-        Write-Error "Transcription failed.`nAPI Error: $($ApiResult.detail)"
+
+    # 1. JSON (Already contains speaker data)
+    Write-Progress -Activity "Processing generated JSON File" -Status "Generating output files..." -PercentComplete 70
+
+    Save-Utf8 "$FullBase.json" $Response
+
+    Start-Sleep -Seconds 1 # Small pause to ensure file is written before we read it again for other formats
+
+    
+    # --- 6. Automate the Container Restart--
+
+    Write-Host "Flushing GPU VRAM by restarting Docker container..." -ForegroundColor DarkYellow
+    docker restart whisperx-api | Out-Null
+    Start-Sleep -Seconds 5 # Give the API a few seconds to boot back up for the next run
+
+
+} else {
+    # JSON file exists, skip API call but read it into $Data for other format generation
+    Write-Host "JSON file already exists ($($FullBase).json), skipping WhisperX API call..." -ForegroundColor Yellow
+    Write-Host "Reading existing JSON to populate data for other format generation..." -ForegroundColor Cyan
+    
+    # Re-read $Data from existing JSON since segments weren't populated in this run
+    try {
+        $JsonContent = Get-Content "$FullBase.json" -Raw -ErrorAction Stop
+        $ApiResult = $JsonContent | ConvertFrom-Json
+        if (-not $ApiResult.segments) { 
+            Write-Error "Existing JSON file has no segments. Please re-run transcription.`nResponse: $($JsonContent)"
+            exit 
+        }
+        $Data = $ApiResult
+        Write-Host "Success! Successfully loaded data from existing JSON." -ForegroundColor Green
+    } catch {
+        Write-Error "Failed to read existing JSON file: $_" -ForegroundColor Red
         exit 
     }
 }
 
-# Show processing state
-Write-Progress -Activity "Processing Audio File" -Status "Processing transcription..." -PercentComplete 60
 
 
-if (-not $ApiResult.segments) { 
-    Write-Error "Transcription returned no segments.`nResponse: $($Response | ConvertTo-Json)"
-    exit 
-}
-
-# Use parsed result for file generation
-$Data = $ApiResult
-
-# Show generation state
-Write-Progress -Activity "Processing Audio File" -Status "Generating output files..." -PercentComplete 70
-
-
-# --- 5. Generate All 5 Formats (Updated with Speaker Labels) ---
-Write-Progress -Activity "Generating files with Speaker Labels..." -Status "Generating output files..." -PercentComplete 75
-
-# 1. JSON (Already contains speaker data)
-Write-Progress -Activity "Processing generated JSON File" -Status "Generating output files..." -PercentComplete 80
-
-Save-Utf8 "$FullBase.json" $Response
-
-Start-Sleep -Seconds 1 # Small pause to ensure file is written before we read it again for other formats
+# --- 5. Generate All 4 Formats (Updated with Speaker Labels) ---
+Write-Progress -Activity "Generating files with Speaker Labels..." -Status "Generating output files..." -PercentComplete 80
+Start-Sleep -Seconds 1
 
 
 # 2. TXT (Rebuilt from segments to include speakers)
@@ -419,8 +487,6 @@ foreach ($s in $Data.segments) {
 Save-Utf8 "$FullBase.txt" $txt
 <##>
 Start-Sleep -Seconds 1 # Small pause to ensure file is written before we read it again for other formats
-
-
 
 
 # 3. SRT
@@ -455,7 +521,7 @@ Start-Sleep -Seconds 1 # Small pause to ensure file is written before we read it
 
 
 # 5. TSV
-Write-Progress -Activity "Generating TSV File with different speakers" -Status "Generating output files..." -PercentComplete 99
+Write-Progress -Activity "Generating TSV File with different speakers" -Status "Generating output files..." -PercentComplete 98
 
 $tsv = "start`tend`tspeaker`ttext`r`n"
 foreach ($s in $Data.segments) {
@@ -468,17 +534,16 @@ Start-Sleep -Seconds 1 # Small pause to ensure file is written before we read it
 # Processed audio files are kept for review/analysis. To delete automatically, remove this block.
 Write-Progress -Activity "Processing Audio File" -Status "Completed!" -PercentComplete 100 -Completed
 
-Write-Host "Success! All files created in: $OutputDir" -ForegroundColor Green
+Start-Sleep -Seconds 1 # Small pause to ensure file is written before we read it again for other formatsStart-Sleep -Seconds 1 # Small pause to ensure file is written before we read it again for other formats
 
-# --- 6. Automate the Container Restart--
+Write-Host "Success! All files TXT, SRT, VTT, and TSV created in: $OutputDir" -ForegroundColor Green
 
 
-Write-Host "Flushing GPU VRAM by restarting Docker container..." -ForegroundColor DarkYellow
-docker restart whisperx-api | Out-Null
-Start-Sleep -Seconds 5 # Give the API a few seconds to boot back up for the next run
 
 
 # --- 7. Ollama Summarization Step ---
+Write-Host "Starting to process generate summary with Ollama..." -ForegroundColor Cyan
+
 Write-Progress -Activity "Generating Summary with Ollama" -Status "Creating MD summary..." -PercentComplete 66
 
 $OllamaModel = "gemma3:4b"
@@ -526,7 +591,7 @@ try {
     
     if ($SummaryResponse.response) {
         Save-Utf8 "$FullBase.md" $SummaryResponse.response
-        Write-Host "Summary created: $($FullBase).md" -ForegroundColor Green
+        Write-Host "Success! Summary MD created: $($FullBase).md" -ForegroundColor Green
     } else {
         Write-Warning "Ollama returned empty response. Check if Ollama is running with model '$OllamaModel'."
     }
@@ -536,4 +601,4 @@ try {
 
 Start-Sleep -Seconds 1 # Small pause before proceeding to next steps
 
-Write-Host "Ready for next file." -ForegroundColor Green
+Write-Host "========================  File processing finished  ========================`n" -ForegroundColor Green
