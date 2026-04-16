@@ -119,6 +119,9 @@ v04.04
 - Added transcription logging functionality: captures execution timestamp, profile settings, API parameters, full URL, query string, and timing summary
 - Log file naming now matches processed audio pattern: `ProcessedFile.WHISPER.YYYYMMDD-HHMMSS.log`
 
+v04.05
+- added comprehensive system information collection to transcription logs, including CPU, RAM, GPU, motherboard, BIOS, disk drives, and operating system details for better context on the hardware environment used for each transcription run. This information is collected using various WMI/CIM classes and included in the JSON log file created for each transcription.
+
 #>
 
 
@@ -156,6 +159,162 @@ function Save-Utf8($path, $content) {
     [System.IO.File]::WriteAllText($path, $content, $Utf8NoBom)
 }
 
+# --- 2a. System Information Function ---
+
+# Collects comprehensive computer system information for logging
+function Get-SystemInfo {
+    # Hostname
+    $hostname = $env:COMPUTERNAME
+    
+    # CPU Information
+    $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
+    $cpuName = $cpu.Name
+    $cpuCores = $cpu.NumberOfCores
+    $cpuLogicalProcessors = $cpu.NumberOfLogicalProcessors
+    $cpuMaxClockSpeed = ($cpu.MaxClockSpeed / 1MB).ToString("0.00") + " GHz"
+    
+    # Memory (RAM)
+    $os = Get-CimInstance Win32_OperatingSystem
+    $totalMemoryBytes = $os.TotalVisibleMemorySize
+    $totalMemoryGB = [Math]::Round($totalMemoryBytes / 1MB, 2)
+    $availableMemoryBytes = $os.FreePhysicalMemory
+    $availableMemoryGB = [Math]::Round($availableMemoryBytes / 1MB, 2)
+    
+    # Physical Memory Modules
+    $memoryModules = Get-CimInstance Win32_PhysicalMemory | ForEach-Object {
+        @{
+            capacity_GB = ([Math]::Round($_.Capacity / 1GB, 0))
+            speed_MHz = $_.Speed
+            manufacturer = $_.Manufacturer
+            partNumber = $_.PartNumber
+        }
+    }
+    
+    # GPU Information - Collect all display adapters including NVIDIA
+    $allGpus = @()
+    
+    # Get integrated/primary GPU from Win32_VideoController
+    $gpuPrimary = Get-CimInstance Win32_VideoController | Select-Object -First 1
+    if ($gpuPrimary) {
+        $allGpus += @{
+            name = $gpuPrimary.Name
+            driver_version = $gpuPrimary.DriverVersion
+            device_id = $gpuPrimary.DeviceID
+            pnp_id = $gpuPrimary.PNPID
+            adapter_type = $gpuPrimary.AdapterType
+        }
+    }
+    
+    # Get display adapters using Win32_VideoController (primary GPU info)
+    $videoControllers = Get-CimInstance Win32_VideoController
+    foreach ($controller in $videoControllers) {
+        if (-not ($allGpus | Where-Object { $_.name -eq $controller.Name })) {
+            $allGpus += @{
+                name = $controller.Name
+                driver_version = $controller.DriverVersion
+                device_id = $controller.DeviceID
+                pnp_id = $controller.PNPID
+                memory_size_mb = [Math]::Round($controller.MemorySize / 1MB, 0)
+            }
+        }
+    }
+    
+    # Try NVIDIA WMI for additional GPU info (for external NVIDIA GPUs)
+    try {
+        $nvidiaGpus = Get-WmiObject -Namespace "root\NVIDIA" -Query "SELECT Name, DriverVersion, DeviceID FROM NVIDIA_GPUInformation" 2>$null
+        if ($nvidiaGpus) {
+            foreach ($ngpu in $nvidiaGpus) {
+                # Check if this GPU isn't already in our list
+                if (-not ($allGpus | Where-Object { $_.name -eq $ngpu.Name })) {
+                    $allGpus += @{
+                        name = $ngpu.Name
+                        driver_version = $ngpu.DriverVersion
+                        device_id = $ngpu.DeviceID
+                        is_external_nvidia = $true
+                    }
+                }
+            }
+        }
+    } catch {
+        # NVIDIA WMI not available, continue with other methods
+    }
+    
+    # If we have multiple GPUs, identify the primary (most powerful) one for logging
+    if ($allGpus.Count -gt 1) {
+        # Prefer external NVIDIA GPU if present
+        $nvidiaGpu = $allGpus | Where-Object { $_.name -match "NVIDIA" } | Select-Object -First 1
+        if ($nvidiaGpu) {
+            $primaryGpu = $nvidiaGpu
+            Write-Host "Detected external NVIDIA GPU: $($primaryGpu.name)" -ForegroundColor DarkYellow
+        } else {
+            # Fall back to first entry (usually primary)
+            $primaryGpu = $allGpus[0]
+        }
+    } else {
+        $primaryGpu = if ($allGpus.Count -gt 0) { $allGpus[0] } else { $null }
+    }
+    
+    # Motherboard/Bios
+    $bios = Get-CimInstance Win32_BIOS
+    $biosManufacturer = $bios.Manufacturer
+    $biosVersion = $bios.Version
+    $biosReleaseDate = ($bios.ReleaseDate -as [DateTime]).ToString("yyyy-MM-dd")
+    
+    $motherboard = Get-CimInstance Win32_BaseBoard | Select-Object -First 1
+    $motherboardManufacturer = $motherboard.Manufacturer
+    $motherboardProduct = $motherboard.Product
+    
+    # Disk Drives
+    $disks = Get-CimInstance Win32_DiskDrive | ForEach-Object {
+        @{
+            model = $_.Model
+            manufacturer = $_.Manufacturer
+            size_GB = ([Math]::Round($_.Size / 1GB, 0))
+            serialNumber = $_.SerialNumber
+            interfaceType = $_.InterfaceType
+        }
+    }
+    
+    # Operating System
+    $osInfo = Get-CimInstance Win32_OperatingSystem | Select-Object -First 1
+    $osCaption = $osInfo.Caption
+    $osArchitecture = $osInfo.OSArchitecture
+    
+    return [PSCustomObject]@{
+        hostname = $hostname
+        cpu = @{
+            name = $cpuName
+            cores = $cpuCores
+            logical_processors = $cpuLogicalProcessors
+            max_clock_speed = $cpuMaxClockSpeed
+        }
+        ram = @{
+            total_gb = $totalMemoryGB
+            available_gb = $availableMemoryGB
+            modules = @($memoryModules)
+        }
+        gpu = @{
+            name = if ($primaryGpu) { $primaryGpu.name } else { $null }
+            driver_version = if ($primaryGpu) { $primaryGpu.driver_version } else { $null }
+            all_detected_gpus = @($allGpus)
+        }
+        motherboard = @{
+            manufacturer = $motherboardManufacturer
+            product = $motherboardProduct
+        }
+        bios = @{
+            manufacturer = $biosManufacturer
+            version = $biosVersion
+            release_date = $biosReleaseDate
+        }
+        disks = @($disks)
+        operating_system = @{
+            caption = $osCaption
+            architecture = $osArchitecture
+        }
+    }
+}
+
 # --- 2b. Logging Functions ---
 
 # Creates a new log file for this transcription run (JSON format for machine readability)
@@ -183,11 +342,15 @@ function New-TranscriptionLog {
     $Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss.fff"
     $DayOfWeek = (Get-Date).ToString("dddd")
     
-    # v04.04/v05.00 - Machine-readable JSON format for log file
+    # v04.04/04.05 - Machine-readable JSON format for log file
+    $SystemInfo = Get-SystemInfo
+    
     $LogData = @{
-        script_version = "whisper-asr-service-docker.v04.04.ps1"
+        script_version = "whisper-asr-service-docker.v04.05.ps1"
         execution_time = $Timestamp
         day_of_week = $DayOfWeek
+        
+        system_information = $SystemInfo
         
         configuration_parameters = @{
             profile = $Profile
@@ -247,10 +410,12 @@ function Write-CompletionSummary {
     $ExistingData = Get-Content $LogPath | ConvertFrom-Json
     
     # Create new object with all properties plus the new timing property
+    # Note: system_information is already in $ExistingData from New-TranscriptionLog
     $UpdatedData = [PSCustomObject]@{
         script_version = $ExistingData.script_version
         execution_time = $ExistingData.execution_time
         day_of_week = $ExistingData.day_of_week
+        system_information = $ExistingData.system_information
         configuration_parameters = $ExistingData.configuration_parameters
         api_parameters = $ExistingData.api_parameters
         query_string = $ExistingData.query_string
