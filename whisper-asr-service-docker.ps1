@@ -120,7 +120,22 @@ v04.04
 - Log file naming now matches processed audio pattern: `ProcessedFile.WHISPER.YYYYMMDD-HHMMSS.log`
 
 v04.05
-- added comprehensive system information collection to transcription logs, including CPU, RAM, GPU, motherboard, BIOS, disk drives, and operating system details for better context on the hardware environment used for each transcription run. This information is collected using various WMI/CIM classes and included in the JSON log file created for each transcription.
+- added comprehensive system information collection to transcription logs, including CPU, RAM, GPU, motherboard, BIOS, disk drives, and operating system details for better context on the hardware environment used for each transcription run. 
+- This information is collected using various WMI/CIM classes and included in the JSON log file created for each transcription.
+
+The v04.06 
+- functionality has already been fully implemented in the `whisper-asr-service-docker.v04.06.ps1` file. 
+- Performance Metrics (v04.06) implemented to calculate and log:
+- __Total Processing Time__: Calculated from transcription start to end time
+- __Real-Time Factor (RTF)__: Ratio of processing time to audio duration (lower is better)
+- __Approx. Token Count__: Based on 1 token ≈ 4 characters rule
+- __Tokens Per Second (TPS)__: Calculated throughput metric
+- These metrics are both displayed in the console output and logged to the JSON log file via the `Write-CompletionSummary` function.
+- issues related to special characters in file names(commas, dots, spaces) that aren't being properly escaped when passed to curl.exe. fiex liek ```powershell -F "audio_file=@$TempProcessedFile"```
+- The original error occurred because `curl.exe` was receiving the entire transcript (potentially thousands of characters) as a command-line argument, exceeding Windows' MAX_COMMAND_LINE limit. By using PowerShell's native `Invoke-RestMethod`, the JSON payload is sent in the HTTP request body rather than the command line, avoiding this limitation entirely.
+
+
+
 
 #>
 
@@ -315,6 +330,22 @@ function Get-SystemInfo {
     }
 }
 
+# --- 2b. Script Version Detection ---
+
+# Extract script version dynamically from the filename (e.g., whisper-asr-service-docker.v04.06.ps1 -> v04.06)
+$ScriptVersion = if ($MyInvocation.MyCommand.Path) {
+    $ScriptPath = $MyInvocation.MyCommand.Path
+    $FileName = [System.IO.Path]::GetFileName($ScriptPath)
+    # Extract version from pattern *.vXX.YY.ps1 or whisper-asr-service-docker.vXX.YY.ps1
+    if ($FileName -match "v(\d+\.\d+)(\.\d+)?\.ps1$") {
+        "whisper-asr-service-docker.v$($Matches[1])"
+    } else {
+        $FileName
+    }
+} else {
+    "whisper-asr-service-docker.v04.06.ps1"  # Fallback for safety
+}
+
 # --- 2b. Logging Functions ---
 
 # Creates a new log file for this transcription run (JSON format for machine readability)
@@ -346,7 +377,7 @@ function New-TranscriptionLog {
     $SystemInfo = Get-SystemInfo
     
     $LogData = @{
-        script_version = "whisper-asr-service-docker.v04.05.ps1"
+        script_version = $ScriptVersion
         execution_time = $Timestamp
         day_of_week = $DayOfWeek
         
@@ -403,7 +434,12 @@ function Write-CompletionSummary {
         [string]$LogPath,
         [datetime]$StartTime,
         [datetime]$EndTime,
-        [int]$TotalSeconds
+        [int]$TotalSeconds,
+        [double]$AudioDuration = 0,
+        [double]$ProcessingTime = 0,
+        [double]$RTF = 0,
+        [int]$TokenCount = 0,
+        [double]$TPS = 0
     )
     
     # Read existing JSON and add timing data
@@ -425,6 +461,13 @@ function Write-CompletionSummary {
             start_time = $StartTime.ToString("yyyy-MM-dd HH:mm:ss")
             end_time = $EndTime.ToString("yyyy-MM-dd HH:mm:ss")
             total_duration_seconds = $TotalSeconds
+        }
+        performance_metrics = @{
+            audio_duration_seconds = [Math]::Round($AudioDuration, 2)
+            processing_time_seconds = [Math]::Round($ProcessingTime, 2)
+            real_time_factor_rtf = [Math]::Round($RTF, 3)
+            approx_token_count = $TokenCount
+            tokens_per_second_tps = [Math]::Round($TPS, 2)
         }
     }
     
@@ -526,27 +569,19 @@ if (Test-Path $TempProcessedFile) {
     switch ($Profile) {
     "phone" {
         # v03.03 - Phone: Speech-focused, narrow bandwidth (200-3500Hz), speech normalization -> WAV PCM uncompressed or MP3 (libmp3lame, 64kbps)
-        $FfMpegCmd = @"
-ffmpeg.exe -i "$FilePath" -af "highpass=f=200, lowpass=f=3500, speechnorm=e=10:r=0.0005:l=1, loudnorm=I=-16:TP=-1.5:LRA=11" $FfMpegOutputParams -ar 16000 "$TempProcessedFile" -y
-"@
+        $FfMpegCmd = "ffmpeg.exe -i `"$FilePath`" -af `"highpass=f=200, lowpass=f=3500, speechnorm=e=10:r=0.0005:l=1, loudnorm=I=-16:TP=-1.5:LRA=11`" $FfMpegOutputParams -ar 16000 `"$TempProcessedFile`" -y"
     }
     "meeting" {
         # v03.03 - Meeting: Full speech range (80-8000Hz), dynamic normalization for variable room acoustics -> WAV PCM uncompressed or MP3 (libmp3lame, 64kbps)
-        $FfMpegCmd = @"
-ffmpeg.exe -i "$FilePath" -af "highpass=f=80, lowpass=f=8000, dynaudnorm=p=0.9:m=50:s=5:g=15, loudnorm=I=-16:TP=-1.5:LRA=11" $FfMpegOutputParams -ar 16000 "$TempProcessedFile" -y
-"@
+        $FfMpegCmd = "ffmpeg.exe -i `"$FilePath`" -af `"highpass=f=80, lowpass=f=8000, dynaudnorm=p=0.9:m=50:s=5:g=15, loudnorm=I=-16:TP=-1.5:LRA=11`" $FfMpegOutputParams -ar 16000 `"$TempProcessedFile`" -y"
     }
     "distant" {
         # v03.03 - Distant: Narrower bandwidth (200-4000Hz), compressor + speech normalization for noisy environments -> WAV PCM uncompressed or MP3 (libmp3lame, 64kbps)
-        $FfMpegCmd = @"
-ffmpeg.exe -i "$FilePath" -af "highpass=f=200, lowpass=f=4000, acompressor=threshold=-20dB:ratio=10:attack=5:release=50:makeup=8, speechnorm=e=30:r=0.0001:l=1, loudnorm=I=-16:TP=-1.5:LRA=11" $FfMpegOutputParams -ar 16000 "$TempProcessedFile" -y
-"@
+        $FfMpegCmd = "ffmpeg.exe -i `"$FilePath`" -af `"highpass=f=200, lowpass=f=4000, acompressor=threshold=-20dB:ratio=10:attack=5:release=50:makeup=8, speechnorm=e=30:r=0.0001:l=1, loudnorm=I=-16:TP=-1.5:LRA=11`" $FfMpegOutputParams -ar 16000 `"$TempProcessedFile`" -y"
     }
     default {
         # v03.03 - Default: Same as phone profile -> WAV PCM uncompressed or MP3 (libmp3lame, 64kbps)
-        $FfMpegCmd = @"
-ffmpeg.exe -i "$FilePath" -af "highpass=f=200, lowpass=f=3500, speechnorm=e=10:r=0.0005:l=1, loudnorm=I=-16:TP=-1.5:LRA=11" $FfMpegOutputParams -ar 16000 "$TempProcessedFile" -y
-"@
+        $FfMpegCmd = "ffmpeg.exe -i `"$FilePath`" -af `"highpass=f=200, lowpass=f=3500, speechnorm=e=10:r=0.0005:l=1, loudnorm=I=-16:TP=-1.5:LRA=11`" $FfMpegOutputParams -ar 16000 `"$TempProcessedFile`" -y"
         }
     }
 
@@ -683,10 +718,12 @@ ffmpeg.exe -i "$FilePath" -af "highpass=f=200, lowpass=f=3500, speechnorm=e=10:r
     Write-Progress -Activity "Processing Audio File" -Status "Starting transcription..." -PercentComplete 20
 
     # Execute the call (Sending ONLY the audio file as form data)
+    # Use proper quoting for curl -F parameter to handle special characters like commas and spaces
+    # The pattern "-F audio_file=@""path/to/file""" works correctly with curl.exe
     $Response = & curl.exe -s -X POST $FullUrl `
       -H "accept: application/json" `
       -H "Content-Type: multipart/form-data" `
-      -F "audio_file=@$TempProcessedFile"
+      -F ("audio_file=@" + "`"$TempProcessedFile`"")
 
     
     # Parse response as JSON for error handling
@@ -850,7 +887,44 @@ Write-Host "Success! All files TXT, SRT, VTT, and TSV created in: $OutputDir" -F
 
 
 
-# --- 7. Write completion summary to log file (after Whisper API, before Ollama) ---
+# --- 7. Calculate Performance Metrics (v04.06) ---
+# Get audio duration and calculate processing metrics
+
+# Try to get duration from API response first, otherwise calculate from segments
+$AudioDuration = if ($Data.duration) { 
+    [Math]::Round($Data.duration, 2) 
+} elseif ($Data.segments -and $Data.segments.Count -gt 0) {
+    # Calculate duration from first segment start to last segment end
+    $firstStart = $Data.segments[0].start
+    $lastEnd = $Data.segments[-1].end
+    [Math]::Round($lastEnd - $firstStart, 2)
+} else { 
+    0 
+}
+
+# Processing time is the difference between transcription start and end
+$ProcessingTime = [Math]::Round(($TranscriptionEndTime - $StartTime).TotalSeconds, 2)
+
+# Calculate RTF (Real-Time Factor): lower is better (RTF < 1.0 means faster than audio duration)
+$RTF = if ($AudioDuration -gt 0) { [Math]::Round($ProcessingTime / $AudioDuration, 3) } else { 0 }
+
+# Approximate token count: 1 token ≈ 4 characters (or ~3-4 words)
+$txtContent = Get-Content "$FullBase.txt" -Raw
+$charCount = $txtContent.Length
+$ApproxTokenCount = [Math]::Round($charCount / 4, 0)
+
+# Calculate TPS (Tokens Per Second)
+$TPS = if ($ProcessingTime -gt 0) { [Math]::Round($ApproxTokenCount / $ProcessingTime, 2) } else { 0 }
+
+Write-Host "`n=====================  Performance Metrics (v04.06)  ======================" -ForegroundColor Cyan
+Write-Host "Total Processing Time:    $($ProcessingTime)s" -ForegroundColor White
+Write-Host "Audio Duration:           $(if($AudioDuration -gt 0){ "$($AudioDuration)s" } else { "N/A" })" -ForegroundColor White
+Write-Host "Real-Time Factor (RTF):   $(if($RTF -gt 0){ "$($RTF)x" } else { "N/A" })" -ForegroundColor $(if($RTF -lt 1.0){"Green"}else{"Yellow"})
+Write-Host "Approx. Token Count:      $ApproxTokenCount tokens" -ForegroundColor White
+Write-Host "Tokens Per Second (TPS):  $($TPS)x" -ForegroundColor $(if($TPS -gt 50){"Cyan"}else{"White"})
+Write-Host "==========================================================================`n" -ForegroundColor Cyan
+
+# --- 7b. Write completion summary to log file (after Whisper API, before Ollama) ---
 if ($LogPath -and (Test-Path $LogPath)) {
     $TotalSeconds = [Math]::Round(($TranscriptionEndTime - $StartTime).TotalSeconds)
     
@@ -859,7 +933,12 @@ if ($LogPath -and (Test-Path $LogPath)) {
             -LogPath $LogPath `
             -StartTime $StartTime `
             -EndTime $TranscriptionEndTime `
-            -TotalSeconds $TotalSeconds
+            -TotalSeconds $TotalSeconds `
+            -AudioDuration $AudioDuration `
+            -ProcessingTime $ProcessingTime `
+            -RTF $RTF `
+            -TokenCount $ApproxTokenCount `
+            -TPS $TPS
     } catch {
         Write-Warning "Could not write completion summary to log: $_"
     }
@@ -908,18 +987,27 @@ Language:
 "@
 
 try {
-    $SummaryResponse = & curl.exe -s http://localhost:11434/api/generate `
-        -H "Content-Type: application/json" `
-        -d (ConvertTo-Json @{model=$OllamaModel;prompt=$SummaryPrompt;stream=$false}) | ConvertFrom-Json
+    # Build the request body as a PowerShell object, then convert to JSON
+    $RequestBody = @{
+        model   = $OllamaModel
+        prompt  = $SummaryPrompt
+        stream  = $false
+    } | ConvertTo-Json
+    
+    # Use Invoke-RestMethod instead of curl.exe to avoid command-line length limitations
+    $SummaryResponse = Invoke-RestMethod -Uri "http://localhost:11434/api/generate" `
+                                         -Method POST `
+                                         -ContentType "application/json" `
+                                         -Body $RequestBody
     
     if ($SummaryResponse.response) {
         Save-Utf8 "$FullBase.md" $SummaryResponse.response
         Write-Host "Success! Summary MD created: $($FullBase).md" -ForegroundColor Green
     } else {
-        Write-Warning "Ollama returned empty response. Check if Ollama is running with model '$OllamaModel'."
+        Write-Host "Ollama returned empty response. Check if Ollama is running with model '$OllamaModel'." -ForegroundColor Red
     }
 } catch {
-    Write-Warning "Ollama summarization failed: $_. Ensure Ollama is running and the model '$OllamaModel' is available."
+    Write-Host "Ollama summarization failed: $_. Ensure Ollama is running and the model '$OllamaModel' is available." -ForegroundColor Red
 }
 
 
