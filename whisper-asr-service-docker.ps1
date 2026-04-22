@@ -131,10 +131,17 @@ v04.06
 - __Approx. Token Count__: Based on 1 token ≈ 4 characters rule
 - __Tokens Per Second (TPS)__: Calculated throughput metric
 - These metrics are both displayed in the console output and logged to the JSON log file via the `Write-CompletionSummary` function.
+- issues related to special characters in file names(commas, dots, spaces) that aren't being properly escaped when passed to curl.exe. fiex liek ```powershell -F "audio_file=@$TempProcessedFile"```
+- The original error occurred because `curl.exe` was receiving the entire transcript (potentially thousands of characters) as a command-line argument, exceeding Windows' MAX_COMMAND_LINE limit. By using PowerShell's native `Invoke-RestMethod`, the JSON payload is sent in the HTTP request body rather than the command line, avoiding this limitation entirely.
 
 v04.07
 - implemented logging from docker 
 - the concept works but needs some additional adjustment, concept abandoned 
+
+v04.08
+- Use proper UTF-8 encoding for all file operations - Ensure all file paths are handled with proper encoding to support Czech/Slovak characters without issues.
+- This includes setting the console output encoding and using UTF-8 encoding for all file reads/writes to prevent character corruption in logs and output files.
+
 
 #>
 
@@ -329,7 +336,6 @@ function Get-SystemInfo {
     }
 }
 
-
 # --- 2b. Script Version Detection ---
 
 # Extract script version dynamically from the filename (e.g., whisper-asr-service-docker.v04.06.ps1 -> v04.06)
@@ -345,7 +351,6 @@ $ScriptVersion = if ($MyInvocation.MyCommand.Path) {
 } else {
     "whisper-asr-service-docker.v04.06.ps1"  # Fallback for safety
 }
-
 
 # --- 2b. Logging Functions ---
 
@@ -366,10 +371,12 @@ function New-TranscriptionLog {
     # v04.04 - New log filename pattern: ProcessedFile.WHISPER.YYYYMMDD-HHmmss.log (matching processed audio file naming)
     $TimestampSuffix = Get-Date -Format "yyyyMMdd-HHmmss"
     # Extract just the base filename from TempProcessedFile, then append .WHISPER.timestamp.log suffix
+    # v04.08 - Use proper path extraction that handles special characters correctly
     $BaseFileName = [System.IO.Path]::GetFileNameWithoutExtension($FilePath)
     $LogFileName = "$BaseFileName.WHISPER.$TimestampSuffix.log"
     # Combine with output directory to get full path
-    $LogPath = [System.IO.Path]::Combine($OutputDir, $LogFileName)
+    # V04.08 Ensure proper path handling with special characters by using explicit quoting
+    $LogPath = Join-Path $OutputDir $LogFileName
     
     $Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss.fff"
     $DayOfWeek = (Get-Date).ToString("dddd")
@@ -378,9 +385,7 @@ function New-TranscriptionLog {
     $SystemInfo = Get-SystemInfo
     
     $LogData = @{
-        
         script_version = $ScriptVersion
-
         execution_time = $Timestamp
         day_of_week = $DayOfWeek
         
@@ -412,105 +417,16 @@ function New-TranscriptionLog {
         }
     }
     
-    # Write initial log file as JSON (will append to later)
-    $LogData | ConvertTo-Json -Depth 10 | Set-Content -Path $LogPath
+    # v04.08 Write initial log file as JSON using .NET method for special character paths
+    try {
+        $jsonOutput = $LogData | ConvertTo-Json -Depth 10
+        [System.IO.File]::WriteAllText($LogPath, $jsonOutput, $Utf8NoBom)
+    } catch {
+        Write-Error "Failed to write log file: $_"
+        exit
+    }
     
     return $LogPath
-}
-
-# --- 2c. Docker Container Log Reader Functions (Using PowerShell Runspace for better performance) ---
-
-# Starts a runspace to read Docker container logs in real-time while transcription is happening
-function Start-DockerLogReader {
-    param(
-        [string]$ContainerName = "whisperx-api",
-        [string]$LogFilePath,
-        [int]$PollIntervalMs = 500
-    )
-    
-    # Create a PowerShell runspace for parallel execution
-    $PowerShell = [PowerShell]::Create()
-    $ScriptBlock = {
-        param($Container, $LogPath, $IntervalMs)
-        
-        try {
-            # Get initial log state to track new lines
-            $LastTimestamp = (Get-Date).AddYears(-10)  # Far in the past
-            
-            while ($true) {
-                Start-Sleep -Milliseconds $IntervalMs
-                
-                # Check for cancellation
-                if ($PowerShell.Runspace.IsAvailable -eq $false) {
-                    break
-                }
-                
-                try {
-                    # Get container logs with timestamps
-                    $Logs = docker logs $Container --tail 20 --details 2>&1
-                    
-                    if (-not $Logs) {
-                        continue
-                    }
-                    
-                    # Process each log line
-                    foreach ($Line in $Logs) {
-                        if ($Line.Trim()) {
-                            $Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss.fff"
-                            $LogEntry = "@$Timestamp | DOCKER: $($Line.Trim())`r`n"
-                            Add-Content -Path $LogPath -Value $LogEntry -Encoding UTF8 -NoNewline
-                        }
-                    }
-                    
-                } catch {
-                    # Silently continue if there are issues reading logs
-                }
-            }
-        } catch {
-            # Log reader error - silently handle
-        }
-    }
-    
-    # Add the script block and parameters to the PowerShell instance
-    $PowerShell.AddScript($ScriptBlock) | Out-Null
-    $PowerShell.AddParameter("Container", $ContainerName)
-    $PowerShell.AddParameter("LogPath", $LogFilePath)
-    $PowerShell.AddParameter("IntervalMs", $PollIntervalMs)
-    
-    # Start the runspace asynchronously
-    $AsyncResult = $PowerShell.BeginInvoke()
-    
-    return @{
-        PowerShell = $PowerShell
-        AsyncResult = $AsyncResult
-    }
-}
-
-# Stops the Docker log reader and disposes of resources
-function Stop-DockerLogReader {
-    param(
-        [hashtable]$ReaderObject
-    )
-    
-    try {
-        if ($ReaderObject.PowerShell) {
-            # Signal cancellation by closing the runspace
-            $ReaderObject.PowerShell.Runspace.Close()
-            
-            # End the asynchronous operation
-            if ($ReaderObject.AsyncResult) {
-                $PowerShell = $ReaderObject.PowerShell
-                if ($PowerShell.EndInvoke($ReaderObject.AsyncResult)) {
-                    # Handle any output if needed
-                }
-            }
-            
-            # Dispose of PowerShell instance
-            $ReaderObject.PowerShell.Dispose()
-        }
-    } catch {
-        # Resource cleanup error - silently handle
-    }
 }
 
 # Appends timing information to the log file
@@ -524,33 +440,6 @@ function Add-LogEntry {
     
     $Line = "@$(Get-Date -Format "yyyy-MM-dd HH:mm:ss") | Event: $EventName | Duration: ${DurationSeconds}s`r`n"
     Add-Content -Path $LogPath -Value $Line
-}
-
-# Reads Docker logs from a file, parses them, and appends them to the transcription log
-function Merge-DockerLogs {
-    param(
-        [string]$LogPath,
-        [string]$DockerLogPath
-    )
-    
-    if (Test-Path $DockerLogPath) {
-        Write-Host "Merging Docker logs into transcription log..." -ForegroundColor DarkCyan
-        
-        # Read Docker logs and append to main log file with timestamp prefix
-        $dockerLogs = Get-Content $DockerLogPath -Raw
-        if ($dockerLogs) {
-            $Line = "@$(Get-Date -Format "yyyy-MM-dd HH:mm:ss") | Event: DOCKER_LOGS | Duration: 0s`r`n"
-            Add-Content -Path $LogPath -Value $Line
-            Add-Content -Path $LogPath -Value $dockerLogs
-        }
-        
-        # Clean up the temporary Docker log file
-        Remove-Item $DockerLogPath -Force | Out-Null
-        
-        Write-Host "Docker logs merged successfully." -ForegroundColor Green
-    } else {
-        Write-Host "No Docker log file found: $DockerLogPath" -ForegroundColor Yellow
-    }
 }
 
 # Appends completion summary to the log file (JSON format)
@@ -567,8 +456,14 @@ function Write-CompletionSummary {
         [double]$TPS = 0
     )
     
-    # Read existing JSON and add timing data
-    $ExistingData = Get-Content $LogPath | ConvertFrom-Json
+    # v04.08 - Use .NET method to read log file with special character paths
+    try {
+        $jsonContent = [System.IO.File]::ReadAllText($LogPath, $Utf8NoBom)
+        $ExistingData = $jsonContent | ConvertFrom-Json
+    } catch {
+        Write-Error "Failed to read existing log file: $_"
+        exit
+    }
     
     # Create new object with all properties plus the new timing property
     # Note: system_information is already in $ExistingData from New-TranscriptionLog
@@ -596,8 +491,14 @@ function Write-CompletionSummary {
         }
     }
     
-    # Write updated JSON back to file
-    $UpdatedData | ConvertTo-Json -Depth 10 | Set-Content -Path $LogPath
+    # v04.08 Write updated JSON back to file using .NET method for special character paths
+    try {
+        $jsonOutput = $UpdatedData | ConvertTo-Json -Depth 10
+        [System.IO.File]::WriteAllText($LogPath, $jsonOutput, $Utf8NoBom)
+    } catch {
+        Write-Error "Failed to write log file: $_"
+        exit
+    }
     
     Write-Host "Log file saved: $LogPath" -ForegroundColor Cyan
 }
@@ -694,39 +595,47 @@ if (Test-Path $TempProcessedFile) {
     switch ($Profile) {
     "phone" {
         # v03.03 - Phone: Speech-focused, narrow bandwidth (200-3500Hz), speech normalization -> WAV PCM uncompressed or MP3 (libmp3lame, 64kbps)
-        $FfMpegCmd = @"
-ffmpeg.exe -i "$FilePath" -af "highpass=f=200, lowpass=f=3500, speechnorm=e=10:r=0.0005:l=1, loudnorm=I=-16:TP=-1.5:LRA=11" $FfMpegOutputParams -ar 16000 "$TempProcessedFile" -y
-"@
+        $FfMpegCmd = "ffmpeg.exe -i `"$FilePath`" -af `"highpass=f=200, lowpass=f=3500, speechnorm=e=10:r=0.0005:l=1, loudnorm=I=-16:TP=-1.5:LRA=11`" $FfMpegOutputParams -ar 16000 `"$TempProcessedFile`" -y"
     }
     "meeting" {
         # v03.03 - Meeting: Full speech range (80-8000Hz), dynamic normalization for variable room acoustics -> WAV PCM uncompressed or MP3 (libmp3lame, 64kbps)
-        $FfMpegCmd = @"
-ffmpeg.exe -i "$FilePath" -af "highpass=f=80, lowpass=f=8000, dynaudnorm=p=0.9:m=50:s=5:g=15, loudnorm=I=-16:TP=-1.5:LRA=11" $FfMpegOutputParams -ar 16000 "$TempProcessedFile" -y
-"@
+        $FfMpegCmd = "ffmpeg.exe -i `"$FilePath`" -af `"highpass=f=80, lowpass=f=8000, dynaudnorm=p=0.9:m=50:s=5:g=15, loudnorm=I=-16:TP=-1.5:LRA=11`" $FfMpegOutputParams -ar 16000 `"$TempProcessedFile`" -y"
     }
     "distant" {
         # v03.03 - Distant: Narrower bandwidth (200-4000Hz), compressor + speech normalization for noisy environments -> WAV PCM uncompressed or MP3 (libmp3lame, 64kbps)
-        $FfMpegCmd = @"
-ffmpeg.exe -i "$FilePath" -af "highpass=f=200, lowpass=f=4000, acompressor=threshold=-20dB:ratio=10:attack=5:release=50:makeup=8, speechnorm=e=30:r=0.0001:l=1, loudnorm=I=-16:TP=-1.5:LRA=11" $FfMpegOutputParams -ar 16000 "$TempProcessedFile" -y
-"@
+        $FfMpegCmd = "ffmpeg.exe -i `"$FilePath`" -af `"highpass=f=200, lowpass=f=4000, acompressor=threshold=-20dB:ratio=10:attack=5:release=50:makeup=8, speechnorm=e=30:r=0.0001:l=1, loudnorm=I=-16:TP=-1.5:LRA=11`" $FfMpegOutputParams -ar 16000 `"$TempProcessedFile`" -y"
     }
     default {
         # v03.03 - Default: Same as phone profile -> WAV PCM uncompressed or MP3 (libmp3lame, 64kbps)
-        $FfMpegCmd = @"
-ffmpeg.exe -i "$FilePath" -af "highpass=f=200, lowpass=f=3500, speechnorm=e=10:r=0.0005:l=1, loudnorm=I=-16:TP=-1.5:LRA=11" $FfMpegOutputParams -ar 16000 "$TempProcessedFile" -y
-"@
+        $FfMpegCmd = "ffmpeg.exe -i `"$FilePath`" -af `"highpass=f=200, lowpass=f=3500, speechnorm=e=10:r=0.0005:l=1, loudnorm=I=-16:TP=-1.5:LRA=11`" $FfMpegOutputParams -ar 16000 `"$TempProcessedFile`" -y"
         }
     }
 
-    # v03.05 - Set FFREPORT environment variable for FFmpeg logging with timestamped filename
-    $LogFileName = "$OutputDir\$BaseName.$ProcessedSuffix.$(Get-Date -Format 'yyyyMMdd-HHmmss').log"
-    $env:FFREPORT = "file='$LogFileName':level=48"
+    # v04.08 - Set FFREPORT environment variable for FFmpeg logging with timestamped filename
+    # Use proper path handling with special characters
+    $LogFileName = "$BaseName.$ProcessedSuffix.$(Get-Date -Format 'yyyyMMdd-HHmmss').log"
+    $FFReportPath = Join-Path $OutputDir $LogFileName
+    
+    # Ensure the directory exists (in case of special character issues)
+    if (-not (Test-Path $OutputDir)) {
+        New-Item -ItemType Directory -Path $OutputDir | Out-Null
+    }
+    
+    $env:FFREPORT = "file='$FFReportPath':level=48"
 
+    # Execute FFmpeg command with proper quoting for special characters
     $FfMpegResult = Invoke-Expression $FfMpegCmd
 
     if ($LASTEXITCODE -ne 0) { 
         Write-Error "FFmpeg preprocessing failed. Check ffmpeg is installed and accessible.`nExit Code: $LASTEXITCODE"
         exit 
+    }
+    
+    # v04.08 - Ensure FFREPORT log file was created
+    if (Test-Path $FFReportPath) {
+        Write-Host "FFmpeg report saved: $FFReportPath" -ForegroundColor Cyan
+    } else {
+        Write-Warning "FFmpeg log file not found at expected location: $FFReportPath"
     }
 
     Write-Host "Success! Audio preprocessed successfully: $TempProcessedFile" -ForegroundColor Green
@@ -822,27 +731,6 @@ ffmpeg.exe -i "$FilePath" -af "highpass=f=200, lowpass=f=3500, speechnorm=e=10:r
         -ProcessedFile $TempProcessedFile `
         -TempProcessedFile $TempProcessedFile
 
-    # v04.07 - Start Docker log reader in background job for parallel processing
-    Write-Host "Starting Docker container log reader..." -ForegroundColor DarkCyan
-    
-    # Get the current timestamp in ISO 8601 format for docker logs --since parameter
-    $RunTimestamp = Get-Date -Format "yyyy-MM-dd'T'HH:mm:ss'Z'"
-    
-    # Define path for Docker logs that will be merged into main log
-    $DockerLogPath = Join-Path $OutputDir "$BaseName.WHISPER-DOCKER.$($RunTimestamp -replace '[^a-zA-Z0-9]', '').log"
-    
-    $LogReaderJob = Start-Job -Name "WhisperX-LogReader" -ScriptBlock {
-        param($ContainerName, $OutputDir, $BaseName, $SinceTimestamp, $DockerLogPath)
-        
-        # Start docker logs from the specified timestamp (since transcription began) and write to file
-        # The -f flag keeps following logs in real-time
-        docker logs -f --since "$SinceTimestamp" $ContainerName 2>&1 | ForEach-Object {
-            $_ | Out-File -Append -FilePath $DockerLogPath -Encoding UTF8
-        }
-    } -ArgumentList @("whisperx-api", $OutputDir, $BaseName, $RunTimestamp, $DockerLogPath)
-    
-    # Small delay to ensure job starts before API call (job needs to initialize and start docker logs)
-    Start-Sleep -Milliseconds 500
 
     # Write BaseURL
     # Write-Host "Base API URL: $BaseUrl" -ForegroundColor Green
@@ -859,7 +747,11 @@ ffmpeg.exe -i "$FilePath" -af "highpass=f=200, lowpass=f=3500, speechnorm=e=10:r
 
 
     
-    if (-not (Test-Path $FilePath)) { Write-Error "File not found: $FilePath"; exit }
+    # v04.08 - Check if the processed file exists (not original FilePath) before API call
+    if (-not (Test-Path "$TempProcessedFile")) { 
+        Write-Error "Processed audio file not found: $TempProcessedFile"
+        exit 
+    }
 
     # --- 4. API Call (Updated to Native Endpoint) ---
     Write-Host "Sending request to Native WhisperX Endpoint..." -ForegroundColor Gray
@@ -871,11 +763,105 @@ ffmpeg.exe -i "$FilePath" -af "highpass=f=200, lowpass=f=3500, speechnorm=e=10:r
     # Show initial progress state
     Write-Progress -Activity "Processing Audio File" -Status "Starting transcription..." -PercentComplete 20
 
-    # Execute the call (Sending ONLY the audio file as form data)
-    $Response = & curl.exe -s -X POST $FullUrl `
-      -H "accept: application/json" `
-      -H "Content-Type: multipart/form-data" `
-      -F "audio_file=@$TempProcessedFile"
+    # v04.08 - Execute the call using Invoke-RestMethod with proper encoding for special characters
+    # This avoids command-line length limitations and properly handles multipart/form-data
+    
+    Write-Host "Uploading file: $TempProcessedFile" -ForegroundColor Cyan
+    
+    try {
+        # Build the form data as a PowerShell object, then convert to JSON for the API call
+        $FormData = @{
+            task            = "transcribe"
+            language        = $Language
+            model           = "large-v3"
+            diarize         = $Config.diarize
+            min_speakers    = $Config.min_speakers
+            max_speakers    = $Config.max_speakers
+            initial_prompt  = $Config.initial_prompt
+            vad_filter      = $Config.vad_filter
+            vad_onset       = $Config.vad_onset
+            vad_offset      = $Config.vad_onset
+            temperature     = $Config.temperature
+        }
+        
+        # Use Invoke-RestMethod with proper multipart form data handling
+        # The API expects the audio file as form-data with name "audio_file"
+        
+        # Create multipart request manually using System.Net.Http HttpClient
+        $boundary = [System.Guid]::NewGuid().ToString()
+        $fileBytes = [System.IO.File]::ReadAllBytes($TempProcessedFile)
+        $fileName = [System.IO.Path]::GetFileName($TempProcessedFile)
+        
+        # Build the request body as bytes
+        $ms = New-Object System.IO.MemoryStream
+        $writer = New-Object System.IO.StreamWriter($ms, [System.Text.Encoding]::UTF8)
+        
+        # Add form fields and file data
+        $separator = [Environment]::NewLine
+        
+        foreach ($key in $FormData.Keys) {
+            $value = $FormData[$key]
+            
+            # Boundary
+            $writer.WriteLine("--$boundary")
+            $writer.WriteLine("Content-Disposition: form-data; name=`"$key`"")
+            $writer.WriteLine("Content-Type: text/plain; charset=utf-8")
+            $writer.WriteLine("")
+            $writer.WriteLine($value)
+        }
+        
+        # Add file part
+        $writer.WriteLine("--$boundary")
+        $writer.WriteLine("Content-Disposition: form-data; name=`"audio_file`"; filename=`"$fileName`"")
+        $writer.WriteLine("Content-Type: application/octet-stream")
+        $writer.WriteLine("")
+        $writer.Flush()
+        
+        # Write file bytes
+        $ms.Write($fileBytes, 0, $fileBytes.Length)
+        
+        # Final boundary
+        $writer.WriteLine("--$boundary--")
+        $writer.Flush()
+        
+        $ms.Position = 0
+        
+        # Read the complete request body
+        $requestBody = New-Object byte[] $ms.Length
+        $reader = New-Object System.IO.BinaryReader($ms)
+        $requestBody = $reader.ReadBytes([int]($ms.Length))
+        
+        # Create HTTP client and send request
+        $handler = New-Object System.Net.Http.HttpClientHandler
+        $client = New-Object System.Net.Http.HttpClient -ArgumentList $handler
+        
+        $content = New-Object System.Net.Http.ByteArrayContent($requestBody)
+        $content.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::Parse("multipart/form-data; boundary=$boundary")
+        
+        $ResponseBytes = $client.PostAsync($FullUrl, $content).Result.Content.ReadAsByteArray()
+        $Response = [System.Text.Encoding]::UTF8.GetString($ResponseBytes)
+        
+        # Clean up
+        $client.Dispose()
+        $handler.Dispose()
+    } catch {
+        Write-Host "API returned error response" -ForegroundColor Yellow
+        
+        if ($_.Exception.Response) {
+            try {
+                $errorStream = $_.Exception.Response.GetResponseStream()
+                $reader = New-Object System.IO.StreamReader($errorStream)
+                $errorBody = $reader.ReadToEnd()
+                Write-Error "Transcription failed.`nError: $errorBody"
+            } catch {
+                Write-Error "Transcription failed.`nError: $($_.Exception.Message)"
+            }
+        } else {
+            Write-Error "Transcription failed with exception: $_"
+        }
+        
+        exit 
+    }
 
     
     # Parse response as JSON for error handling
@@ -941,38 +927,6 @@ ffmpeg.exe -i "$FilePath" -af "highpass=f=200, lowpass=f=3500, speechnorm=e=10:r
     
     # --- 6. Automate the Container Restart--
 
-    Write-Host "Stopping Docker container log reader..." -ForegroundColor DarkCyan
-    
-    # Stop the background job and wait for it to finish
-    if ($LogReaderJob) {
-        Stop-Job $LogReaderJob | Out-Null
-        Remove-Job $LogReaderJob -Force | Out-Null
-        
-        # Wait a moment for files to be flushed
-        Start-Sleep -Milliseconds 500
-        
-        # Merge Docker logs into the main transcription log file
-        if (Test-Path $DockerLogPath) {
-            Write-Host "Merging Docker logs into transcription log..." -ForegroundColor DarkCyan
-            
-            # Read Docker logs and append to main log file
-            $dockerLogs = Get-Content $DockerLogPath -Raw
-            if ($dockerLogs) {
-                Add-Content -Path $LogPath -Value "@$(Get-Date -Format "yyyy-MM-dd HH:mm:ss") | Event: DOCKER_LOGS_START`r`n"
-                Add-Content -Path $LogPath -Value $dockerLogs
-                Add-Content -Path $LogPath -Value "@$(Get-Date -Format "yyyy-MM-dd HH:mm:ss") | Event: DOCKER_LOGS_END`r`n"
-            }
-            
-            # Clean up the temporary Docker log file
-            Remove-Item $DockerLogPath -Force | Out-Null
-            
-            Write-Host "Docker logs merged successfully." -ForegroundColor Green
-        } else {
-            Write-Host "No Docker log file found: $DockerLogPath" -ForegroundColor Yellow
-        }
-    }
-    
-    # Restart container to flush GPU VRAM
     Write-Host "Flushing GPU VRAM by restarting Docker container..." -ForegroundColor DarkYellow
     docker restart whisperx-api | Out-Null
     Start-Sleep -Seconds 5 # Give the API a few seconds to boot back up for the next run
@@ -1066,41 +1020,7 @@ Write-Progress -Activity "Processing Audio File" -Status "Completed!" -PercentCo
 
 Start-Sleep -Seconds 1 # Small pause to ensure file is written before we read it again for other formatsStart-Sleep -Seconds 1 # Small pause to ensure file is written before we read it again for other formats
 
-        Write-Host "Success! All files TXT, SRT, VTT, and TSV created in: $OutputDir" -ForegroundColor Green
-        
-        # If no JSON file existed, we need to merge Docker logs after file generation
-        if (-not (Test-Path "$FullBase.json")) {
-            Write-Host "Stopping Docker container log reader..." -ForegroundColor DarkCyan
-            
-            # Stop the background job and wait for it to finish
-            if ($LogReaderJob) {
-                Stop-Job $LogReaderJob | Out-Null
-                Remove-Job $LogReaderJob -Force | Out-Null
-                
-                # Wait a moment for files to be flushed
-                Start-Sleep -Milliseconds 500
-                
-                # Merge Docker logs into the main transcription log file
-                if (Test-Path $DockerLogPath) {
-                    Write-Host "Merging Docker logs into transcription log..." -ForegroundColor DarkCyan
-                    
-                    # Read Docker logs and append to main log file
-                    $dockerLogs = Get-Content $DockerLogPath -Raw
-                    if ($dockerLogs) {
-                        Add-Content -Path $LogPath -Value "@$(Get-Date -Format "yyyy-MM-dd HH:mm:ss") | Event: DOCKER_LOGS_START`r`n"
-                        Add-Content -Path $LogPath -Value $dockerLogs
-                        Add-Content -Path $LogPath -Value "@$(Get-Date -Format "yyyy-MM-dd HH:mm:ss") | Event: DOCKER_LOGS_END`r`n"
-                    }
-                    
-                    # Clean up the temporary Docker log file
-                    Remove-Item $DockerLogPath -Force | Out-Null
-                    
-                    Write-Host "Docker logs merged successfully." -ForegroundColor Green
-                } else {
-                    Write-Host "No Docker log file found: $DockerLogPath" -ForegroundColor Yellow
-                }
-            }
-        }
+Write-Host "Success! All files TXT, SRT, VTT, and TSV created in: $OutputDir" -ForegroundColor Green
 
 
 
@@ -1180,7 +1100,6 @@ if (Test-Path $TranscriptPath) {
 
 $SummaryPrompt = @"
 Please create a detailed structured summary of this audio transcript in the original language of the transcript file. 
-The transcript may not be completely precise and may contain some errors, but please do your best to create fix to sentences that make sense beforehand. 
 
 Rules:
 1. Include speaker names if possible (or speaker labels if not possible to deduce names)
@@ -1206,9 +1125,18 @@ Language:
 "@
 
 try {
-    $SummaryResponse = & curl.exe -s http://localhost:11434/api/generate `
-        -H "Content-Type: application/json" `
-        -d (ConvertTo-Json @{model=$OllamaModel;prompt=$SummaryPrompt;stream=$false}) | ConvertFrom-Json
+    # Build the request body as a PowerShell object, then convert to JSON
+    $RequestBody = @{
+        model   = $OllamaModel
+        prompt  = $SummaryPrompt
+        stream  = $false
+    } | ConvertTo-Json
+    
+    # Use Invoke-RestMethod instead of curl.exe to avoid command-line length limitations
+    $SummaryResponse = Invoke-RestMethod -Uri "http://localhost:11434/api/generate" `
+                                         -Method POST `
+                                         -ContentType "application/json" `
+                                         -Body $RequestBody
     
     if ($SummaryResponse.response) {
         Save-Utf8 "$FullBase.md" $SummaryResponse.response
@@ -1217,7 +1145,7 @@ try {
         Write-Host "Ollama returned empty response. Check if Ollama is running with model '$OllamaModel'." -ForegroundColor Red
     }
 } catch {
-    Write-Host "Ollama summarization failed: $_. Ensure Ollama is running and the model '$OllamaModel' is available."  -ForegroundColor Red
+    Write-Host "Ollama summarization failed: $_. Ensure Ollama is running and the model '$OllamaModel' is available." -ForegroundColor Red
 }
 
 
