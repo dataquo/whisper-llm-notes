@@ -142,6 +142,44 @@ v04.08
 - Use proper UTF-8 encoding for all file operations - Ensure all file paths are handled with proper encoding to support Czech/Slovak characters without issues.
 - This includes setting the console output encoding and using UTF-8 encoding for all file reads/writes to prevent character corruption in logs and output files.
 
+v05.00
+- changed summary generation prompt to "detailed notes" to encourage more comprehensive summaries that include key points, action items, and speaker contributions rather than just a brief overview. This should result in more informative summaries that capture the essence of the meeting or conversation in greater detail.
+
+- Filename Pattern: `file_name.LL-X#.EXT`
+
+Where:
+
+- __LL__ = Language code (2 chars, optional) - e.g., "CZ", "SK", "EN"
+- __X__ = Profile indicator (optional): P=phone, M=meeting, D=distant
+- __#__ = Speaker count number (optional) - sets both min_speakers and max_speakers
+- __EXT__ = File extension
+
+__How it works in the script__:
+
+1. The `Extract-ParametersFromFilename` function uses regex patterns to extract:
+
+   - Language code from pattern like `[lang]-[profile][count]`
+   - Profile character (P/M/D)
+   - Speaker count number
+
+2. The extracted profile character is converted to full profile names:
+
+   - P → "phone"
+   - M → "meeting"
+   - D → "distant"
+
+3. If no speaker count is specified, defaults are used:
+
+   - phone: min_speakers=2, max_speakers=2
+   - meeting: min_speakers=2, max_speakers=5
+   - distant: uses default values
+
+__Examples:__
+
+- `recording.EN-P2.m4a` → English language, phone profile, 2 speakers
+- `meeting.SK-M3.mp3` → Slovak language, meeting profile, 3 speakers
+- `call.CZ-D4.m4a` → Czech language, distant profile, 4 speakers
+- `audio.m4a` (no special suffix) → Uses defaults: phone profile, no speaker override
 
 #>
 
@@ -153,14 +191,66 @@ param(
 
     [Parameter(Mandatory=$false)]
     [ValidateSet("meeting", "phone", "distant")]
-    [string]$Profile = "phone", # Defaulting to phone based on your last run
+    [string]$Profile,  # Will be extracted from filename or defaulted
 
     [Parameter(Mandatory=$false)]
     [ValidateSet("cs", "sk", "en", "auto")]
     [string]$Language, # Optional language code (e.g., "cs", "sk") - if not provided, API auto-detects
 
+    [Parameter(Mandatory=$false)]
+    [int]$MinSpeakers = $null,  # Override min_speakers from profile defaults (optional)
+
+    [Parameter(Mandatory=$false)]
+    [int]$MaxSpeakers = $null,  # Override max_speakers from profile defaults (optional)
+
     [switch]$DebugMode # Enable verbose/debug output when specified
 )
+
+# --- Extract parameters from filename if provided ---
+function Extract-ParametersFromFilename {
+    param(
+        [string]$FileName
+    )
+    
+    # Remove extension to get base name
+    $BaseName = [System.IO.Path]::GetFileNameWithoutExtension($FileName)
+    
+    # Pattern: file_name.LL-X#.EXT where:
+    # - LL = language code (2 chars, optional)
+    # - X  = profile indicator (P=phone, M=meeting, D=distant, optional)
+    # - #  = speaker count number (optional)
+    
+    $LanguageCode = $null
+    $ProfileChar = $null
+    $SpeakerCount = $null
+    
+    # Extract the last segment after dot that might contain LL-X#
+    # Pattern: [lang]-[profile][count] at the end of base name
+    if ($BaseName -match "([A-Z]{2})-(.)(\d+)$") {
+        $LanguageCode = $Matches[1].ToLower()
+        $ProfileChar = $Matches[2]
+        $SpeakerCount = [int]$Matches[3]
+    } elseif ($BaseName -match "([A-Z]{2})-(.)$") {
+        # Language + Profile but no speaker count
+        $LanguageCode = $Matches[1].ToLower()
+        $ProfileChar = $Matches[2]
+        $SpeakerCount = $null
+    } elseif ($BaseName -match "-(.)(\d+)$") {
+        # Profile + speaker count but no language
+        $ProfileChar = $Matches[1]
+        $SpeakerCount = [int]$Matches[2]
+    } elseif ($BaseName -match "-(.)$") {
+        # Just profile, no speaker count
+        $ProfileChar = $Matches[1]
+        $SpeakerCount = $null
+    }
+    
+    return @{
+        LanguageCode = $LanguageCode
+        ProfileChar = $ProfileChar
+        SpeakerCount = $SpeakerCount
+    }
+}
 
 # --- 1. Fix Console & Encoding for Czech/Slovak Characters ---
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -334,6 +424,32 @@ function Get-SystemInfo {
             architecture = $osArchitecture
         }
     }
+}
+
+# --- 2a. Extract filename parameters (Language, Profile, Speaker count) ---
+
+$FileName = [System.IO.Path]::GetFileName($FilePath)
+$ExtractedParams = Extract-ParametersFromFilename -FileName $FileName
+
+# Determine Language from extracted params or parameter
+if ($ExtractedParams.LanguageCode) {
+    $Language = $ExtractedParams.LanguageCode
+}
+
+# Determine Profile from extracted params or parameter
+if ($ExtractedParams.ProfileChar) {
+    switch ($ExtractedParams.ProfileChar) {
+        "P" { $Profile = "phone" }
+        "M" { $Profile = "meeting" }
+        "D" { $Profile = "distant" }
+        default { $Profile = "phone" }  # Default fallback
+    }
+}
+
+# Determine speaker count from extracted params (if available)
+if ($ExtractedParams.SpeakerCount) {
+    $MinSpeakers = $ExtractedParams.SpeakerCount
+    $MaxSpeakers = $ExtractedParams.SpeakerCount
 }
 
 # --- 2b. Script Version Detection ---
@@ -511,8 +627,8 @@ $ProfileSettings = @{
         "vad_onset"      = "0.1"
         "vad_offset"     = "0.2"
         "initial_prompt" = "Toto je nahrávka z meetingu."
-        "min_speakers"   = "2"        
-        "max_speakers"   = "5"        
+        "min_speakers"   = $MinSpeakers -replace "^$", "2"
+        "max_speakers"   = $MaxSpeakers -replace "^$", "5"
         "temperature"    = "0.0"
     }
     "phone" = @{
@@ -521,8 +637,8 @@ $ProfileSettings = @{
         "vad_onset"      = "0.5"    # Less sensitive. The diarization engine (Pyannote) needs a solid "chunk" of audio (usually 0.5s or more) to identify a voice. If the segments are too short, it fails to identify who is speaking.
         "vad_offset"     = "0.5"    # Less sensitive        
         "initial_prompt" = "Přepis nahrávky telefonického hovoru. Hlasy mohou být zkreslené."
-        "min_speakers"   = "2"        
-        "max_speakers"   = "2"      # Hard limit to 2 people   
+        "min_speakers"   = $MinSpeakers -replace "^$", "2"
+        "max_speakers"   = $MaxSpeakers -replace "^$", "2"      # Hard limit to 2 people   
         "temperature"    = "0.0"
     }
     "distant" = @{
@@ -763,87 +879,45 @@ if (Test-Path $TempProcessedFile) {
     # Show initial progress state
     Write-Progress -Activity "Processing Audio File" -Status "Starting transcription..." -PercentComplete 20
 
-    # v04.08 - Execute the call using Invoke-RestMethod with proper encoding for special characters
-    # This avoids command-line length limitations and properly handles multipart/form-data
+    # v04.08 - Execute the call using curl.exe for multipart/form-data
+    # Using curl.exe directly to handle file uploads properly
     
     Write-Host "Uploading file: $TempProcessedFile" -ForegroundColor Cyan
     
     try {
-        # Build the form data as a PowerShell object, then convert to JSON for the API call
-        $FormData = @{
-            task            = "transcribe"
-            language        = $Language
-            model           = "large-v3"
-            diarize         = $Config.diarize
-            min_speakers    = $Config.min_speakers
-            max_speakers    = $Config.max_speakers
-            initial_prompt  = $Config.initial_prompt
-            vad_filter      = $Config.vad_filter
-            vad_onset       = $Config.vad_onset
-            vad_offset      = $Config.vad_onset
-            temperature     = $Config.temperature
+        # Build curl arguments with proper quoting for special characters in paths
+        $curlArgs = @(
+            "-s", "-X", "POST", "$FullUrl"
+            "-H", "Content-Type: multipart/form-data"
+            "-F", "audio_file=@`"$TempProcessedFile`""
+            "-F", "task=transcribe"
+            "-F", "language=$Language"
+            "-F", "model=large-v3"
+            "-F", "diarize=$($Config.diarize)"
+            "-F", "min_speakers=$($Config.min_speakers)"
+            "-F", "max_speakers=$($Config.max_speakers)"
+            "-F", "initial_prompt=$(curl.exe --data-urlencode "$($Config.initial_prompt.Replace("`n", " "))" 2>$null)"  # Remove newlines from prompt, URL encode special characters
+            "-F", "vad_filter=$($Config.vad_filter)"
+            "-F", "vad_onset=$($Config.vad_onset)"
+            "-F", "vad_offset=$($Config.vad_offset)"
+            "-F", "temperature=$($Config.temperature)"
+        )
+        
+        # Execute curl command
+        $Response = & curl.exe @curlArgs
+        
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "API returned error response" -ForegroundColor Yellow
+            Write-Error "Transcription failed with exit code: $LASTEXITCODE"
+            exit
         }
         
-        # Use Invoke-RestMethod with proper multipart form data handling
-        # The API expects the audio file as form-data with name "audio_file"
-        
-        # Create multipart request manually using System.Net.Http HttpClient
-        $boundary = [System.Guid]::NewGuid().ToString()
-        $fileBytes = [System.IO.File]::ReadAllBytes($TempProcessedFile)
-        $fileName = [System.IO.Path]::GetFileName($TempProcessedFile)
-        
-        # Build the request body as bytes
-        $ms = New-Object System.IO.MemoryStream
-        $writer = New-Object System.IO.StreamWriter($ms, [System.Text.Encoding]::UTF8)
-        
-        # Add form fields and file data
-        $separator = [Environment]::NewLine
-        
-        foreach ($key in $FormData.Keys) {
-            $value = $FormData[$key]
-            
-            # Boundary
-            $writer.WriteLine("--$boundary")
-            $writer.WriteLine("Content-Disposition: form-data; name=`"$key`"")
-            $writer.WriteLine("Content-Type: text/plain; charset=utf-8")
-            $writer.WriteLine("")
-            $writer.WriteLine($value)
+        # Check if response is empty or contains error
+        if (-not $Response -or $Response.Trim().Length -eq 0) {
+            Write-Host "API returned empty response" -ForegroundColor Yellow
+            Write-Error "Transcription failed. Empty response from API."
+            exit
         }
-        
-        # Add file part
-        $writer.WriteLine("--$boundary")
-        $writer.WriteLine("Content-Disposition: form-data; name=`"audio_file`"; filename=`"$fileName`"")
-        $writer.WriteLine("Content-Type: application/octet-stream")
-        $writer.WriteLine("")
-        $writer.Flush()
-        
-        # Write file bytes
-        $ms.Write($fileBytes, 0, $fileBytes.Length)
-        
-        # Final boundary
-        $writer.WriteLine("--$boundary--")
-        $writer.Flush()
-        
-        $ms.Position = 0
-        
-        # Read the complete request body
-        $requestBody = New-Object byte[] $ms.Length
-        $reader = New-Object System.IO.BinaryReader($ms)
-        $requestBody = $reader.ReadBytes([int]($ms.Length))
-        
-        # Create HTTP client and send request
-        $handler = New-Object System.Net.Http.HttpClientHandler
-        $client = New-Object System.Net.Http.HttpClient -ArgumentList $handler
-        
-        $content = New-Object System.Net.Http.ByteArrayContent($requestBody)
-        $content.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::Parse("multipart/form-data; boundary=$boundary")
-        
-        $ResponseBytes = $client.PostAsync($FullUrl, $content).Result.Content.ReadAsByteArray()
-        $Response = [System.Text.Encoding]::UTF8.GetString($ResponseBytes)
-        
-        # Clean up
-        $client.Dispose()
-        $handler.Dispose()
     } catch {
         Write-Host "API returned error response" -ForegroundColor Yellow
         
@@ -1094,20 +1168,20 @@ $TranscriptPath = "$FullBase.txt"
 if (Test-Path $TranscriptPath) {
     $TranscriptContent = Get-Content -Raw $TranscriptPath
 } else {
-    Write-Warning "Transcript file not found: $TranscriptPath. Skipping summary generation."
+    Write-Warning "Transcript file not found: $TranscriptPath. Skipping notes generation."
     $TranscriptContent = ""
 }
 
 $SummaryPrompt = @"
-Please create a detailed structured summary of this audio transcript in the original language of the transcript file. 
+Please create a detailed structured notes of this audio transcript in the original language of the transcript file. 
 
 Rules:
 1. Include speaker names if possible (or speaker labels if not possible to deduce names)
-2. One of the speaker is Martin, another speaker can be derived from topic or transcript (if name mentioned)
+2. One of the speaker is Martin, another speaker can be derived from topic or transcript (if name mentioned) 
 3. include timestamps if deemed relevant to the content of the conversation (e.g., important decisions, action items, topic changes) 
 
 TRANSCRIPT TOPIC: $BaseName 
-- the initial number is hardcoded date in the format YYYY-MM-DD or YYMMDD, please always format the date as "DD MonthName YYYY" (e.g., 14 April 2024) in the summary file
+- the initial number is hardcoded date in the format YYYY-MM-DD or YYMMDD, please always format the date as "DD MonthName YYYY" (e.g., 14 April 2024) in the notes file
 - based on the date,include the day of the week as well (e.g., Sunday, 14 April 2024)
 - the initial number is followed by a descriptive title that can be used to understand the topic of the conversation and potentially identify speakers 
 
@@ -1115,12 +1189,14 @@ TRANSCRIPT CONTENT:
 $TranscriptContent
 
 Format: 
-- The summary file should be in markdown .MD format with clear sections and bullet points where appropriate. 
+- The notes file should be in markdown .MD format with clear sections and bullet points where appropriate. 
+- Return ONLY the markedown content without any additional explanations or text
 
 Language: 
-- The whole summary MD  file should be in the same language as the transcript file
-- if the transcript is in Czech, write the summary in Czech. If the transcript is in Slovak, write the summary in Slovak. If the transcript is in English, write the summary in English.
+- The whole notes MD  file should be in the same language as the transcript file
+- if the transcript is in Czech, write the notes in Czech. If the transcript is in Slovak, write the notes in Slovak. If the transcript is in English, write the notes in English.
 - it will be either Czech or Slovak or English, always pick one and only one for the whole MD file 
+- SPEAKER_00, SPEAKER_01, and so on are exluded from consideration when determining the language of the transcript, so if the transcript contains "SPEAKER_00: Dobrý den, jak se máte?" the summary should be in Czech, not in English, because the actual content of the transcript is in Czech.
 
 "@
 
