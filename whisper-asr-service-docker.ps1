@@ -190,6 +190,13 @@ v05.01
 - Generate NOTES.MD and SUMMARY.MD only if non-existent 
 - Append server and model into NOTES.MD and SUMMARY.MD after AI processing
 
+v05.02
+- Fixed performance metrics calculation bug that triggered even when no audio transcription occurred
+- The issue was that the Performance Metrics section (v04.06) would calculate RTF, TPS, and other metrics for files where only SRT/TXT/VTT/TSV formats were generated from existing JSON files without re-transcribing
+- Added conditional check `if ($TranscriptionEndTime)` to wrap the performance metrics calculation - this ensures metrics are only calculated when actual transcription happened (when $TranscriptionEndTime is set)
+- Performance metrics now correctly show "N/A" for audio duration and processing time when only format conversion occurs from existing JSON files, rather than showing misleading values
+- The fix prevents false RTF/TPS calculations that would occur because the timing variables weren't properly initialized during skip scenarios
+
 #>
 
 
@@ -1109,44 +1116,46 @@ Write-Host "Success! All files TXT, SRT, VTT, and TSV created in: $OutputDir" -F
 
 
 # --- 7. Calculate Performance Metrics (v04.06) ---
-# Get audio duration and calculate processing metrics
+# Only calculate performance metrics if actual transcription occurred
+# ($TranscriptionEndTime is only set when we go through the WhisperX API call)
+if ($TranscriptionEndTime -and $LogPath -and (Test-Path $LogPath)) {
+    # Get audio duration and calculate processing metrics
 
-# Try to get duration from API response first, otherwise calculate from segments
-$AudioDuration = if ($Data.duration) { 
-    [Math]::Round($Data.duration, 2) 
-} elseif ($Data.segments -and $Data.segments.Count -gt 0) {
-    # Calculate duration from first segment start to last segment end
-    $firstStart = $Data.segments[0].start
-    $lastEnd = $Data.segments[-1].end
-    [Math]::Round($lastEnd - $firstStart, 2)
-} else { 
-    0 
-}
+    # Try to get duration from API response first, otherwise calculate from segments
+    $AudioDuration = if ($Data.duration) { 
+        [Math]::Round($Data.duration, 2) 
+    } elseif ($Data.segments -and $Data.segments.Count -gt 0) {
+        # Calculate duration from first segment start to last segment end
+        $firstStart = $Data.segments[0].start
+        $lastEnd = $Data.segments[-1].end
+        [Math]::Round($lastEnd - $firstStart, 2)
+    } else { 
+        0 
+    }
 
-# Processing time is the difference between transcription start and end
-$ProcessingTime = [Math]::Round(($TranscriptionEndTime - $StartTime).TotalSeconds, 2)
+    # Processing time is the difference between transcription start and end
+    $ProcessingTime = [Math]::Round(($TranscriptionEndTime - $StartTime).TotalSeconds, 2)
 
-# Calculate RTF (Real-Time Factor): lower is better (RTF < 1.0 means faster than audio duration)
-$RTF = if ($AudioDuration -gt 0) { [Math]::Round($ProcessingTime / $AudioDuration, 3) } else { 0 }
+    # Calculate RTF (Real-Time Factor): lower is better (RTF < 1.0 means faster than audio duration)
+    $RTF = if ($AudioDuration -gt 0) { [Math]::Round($ProcessingTime / $AudioDuration, 3) } else { 0 }
 
-# Approximate token count: 1 token ≈ 4 characters (or ~3-4 words)
-$txtContent = Get-Content "$FullBase.txt" -Raw
-$charCount = $txtContent.Length
-$ApproxTokenCount = [Math]::Round($charCount / 4, 0)
+    # Approximate token count: 1 token ≈ 4 characters (or ~3-4 words)
+    $txtContent = Get-Content "$FullBase.txt" -Raw
+    $charCount = $txtContent.Length
+    $ApproxTokenCount = [Math]::Round($charCount / 4, 0)
 
-# Calculate TPS (Tokens Per Second)
-$TPS = if ($ProcessingTime -gt 0) { [Math]::Round($ApproxTokenCount / $ProcessingTime, 2) } else { 0 }
+    # Calculate TPS (Tokens Per Second)
+    $TPS = if ($ProcessingTime -gt 0) { [Math]::Round($ApproxTokenCount / $ProcessingTime, 2) } else { 0 }
 
-Write-Host "`n=====================  Performance Metrics (v04.06)  ======================" -ForegroundColor Cyan
-Write-Host "Total Processing Time:    $($ProcessingTime)s" -ForegroundColor White
-Write-Host "Audio Duration:           $(if($AudioDuration -gt 0){ "$($AudioDuration)s" } else { "N/A" })" -ForegroundColor White
-Write-Host "Real-Time Factor (RTF):   $(if($RTF -gt 0){ "$($RTF)x" } else { "N/A" })" -ForegroundColor $(if($RTF -lt 1.0){"Green"}else{"Yellow"})
-Write-Host "Approx. Token Count:      $ApproxTokenCount tokens" -ForegroundColor White
-Write-Host "Tokens Per Second (TPS):  $($TPS)x" -ForegroundColor $(if($TPS -gt 50){"Cyan"}else{"White"})
-Write-Host "==========================================================================`n" -ForegroundColor Cyan
+    Write-Host "`n=====================  Performance Metrics (v04.06)  ======================" -ForegroundColor Cyan
+    Write-Host "Total Processing Time:    $($ProcessingTime)s" -ForegroundColor White
+    Write-Host "Audio Duration:           $(if($AudioDuration -gt 0){ "$($AudioDuration)s" } else { "N/A" })" -ForegroundColor White
+    Write-Host "Real-Time Factor (RTF):   $(if($RTF -gt 0){ "$($RTF)x" } else { "N/A" })" -ForegroundColor $(if($RTF -lt 1.0){"Green"}else{"Yellow"})
+    Write-Host "Approx. Token Count:      $ApproxTokenCount tokens" -ForegroundColor White
+    Write-Host "Tokens Per Second (TPS):  $($TPS)x" -ForegroundColor $(if($TPS -gt 50){"Cyan"}else{"White"})
+    Write-Host "==========================================================================`n" -ForegroundColor Cyan
 
-# --- 7b. Write completion summary to log file (after Whisper API, before Ollama) ---
-if ($LogPath -and (Test-Path $LogPath)) {
+    # --- 7b. Write completion summary to log file (after Whisper API, before Ollama) ---
     $TotalSeconds = [Math]::Round(($TranscriptionEndTime - $StartTime).TotalSeconds)
     
     try {
@@ -1173,7 +1182,7 @@ if (-not (Test-Path "$FullBase.NOTES.md")) {
     Write-Progress -Activity "Generating Detailed Notes with LM Studio" -Status "Creating NOTES.md summary..." -PercentComplete 67
     
 $RemoteApiUrl = "http://10.0.0.162:1234/v1"
-$RemoteModel = "qwen/qwen3.5-35b-a3b"
+$RemoteModel = "qwen/qwen3.6-35b-a3b"
 $TranscriptPath = "$FullBase.txt"
 
 # Read the transcript file content to include in the prompt
@@ -1190,7 +1199,7 @@ Please create a detailed structured notes of this audio transcript in the origin
 
 Rules:
 1. Include speaker names if possible (or speaker labels if not possible to deduce names)
-2. One of the speaker is Martin, another speaker can be derived from topic or transcript (if name mentioned) 
+2. Speaker names can be derived from topic or transcript (if name mentioned) 
 3. include timestamps if deemed relevant to the content of the conversation (e.g., important decisions, action items, topic changes) 
 
 TRANSCRIPT TOPIC: $BaseName 
@@ -1278,16 +1287,16 @@ if (-not (Test-Path "$FullBase.SUMMARY.md")) {
     Write-Progress -Activity "Generating Summary with Ollama" -Status "Creating SUMMARY.MD summary..." -PercentComplete 68
 
 $LocalApiUrl = "http://localhost:11434"
-#$OllamaModel = "gemma3:4b"
-#$OllamaModel = "gpt-oss:20b"
+# $OllamaModel = "gemma3:4b"
 $OllamaModel = "qwen3:8b"
+# $OllamaModel = "gpt-oss:20b"
 $TranscriptPath = "$FullBase.txt"
 
 # Read the transcript file content to include in the prompt
 if (Test-Path $TranscriptPath) {
     $TranscriptContent = Get-Content -Raw $TranscriptPath
 } else {
-    Write-Warning "Transcript file not found: $TranscriptPath. Skipping summary generation."
+    Write-Warning "Transcript file not found: $TranscriptPath. Skipping notes generation."
     $TranscriptContent = ""
 }
 
@@ -1296,7 +1305,7 @@ Please create a structured summary of this audio transcript in the original lang
 
 Rules:
 1. Include speaker names if possible (or speaker labels if not possible to deduce names)
-2. One of the speaker is Martin, another speaker can be derived from topic or transcript (if name mentioned) 
+2. Speaker names can be derived from topic or transcript (if name mentioned) 
 3. include timestamps if deemed relevant to the content of the conversation (e.g., important decisions, action items, topic changes) 
 
 TRANSCRIPT TOPIC: $BaseName 
