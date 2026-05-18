@@ -197,6 +197,13 @@ v05.02
 - Performance metrics now correctly show "N/A" for audio duration and processing time when only format conversion occurs from existing JSON files, rather than showing misleading values
 - The fix prevents false RTF/TPS calculations that would occur because the timing variables weren't properly initialized during skip scenarios
 
+v05.03
+- Fixed the false "Transcript incomplete" triggers in `_MASTER_WHISPER.ps1` 
+- Root Cause: The master script was checking for a generic `.md` file extension, but `whisper-asr-service-docker.v05.03.ps1` generates two separate files: `{basename}.NOTES.md` and `{basename}.SUMMARY.md`. Since neither matched the exact pattern `{basename}.md`, the check incorrectly flagged files as missing transcripts even when all required files existed.
+- Solution:-  Updated lines 192-204 to handle `.md` file checking specially - now checks for either `.NOTES.md` or `.SUMMARY.md` variants before marking a file as incomplete.
+- The script will now correctly skip processing for files where both `NOTES.md` and `SUMMARY.md` exist, regardless of whether the generic `.md` filename exists.
+
+
 #>
 
 
