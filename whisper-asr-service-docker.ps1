@@ -203,6 +203,14 @@ v05.03
 - Solution:-  Updated lines 192-204 to handle `.md` file checking specially - now checks for either `.NOTES.md` or `.SUMMARY.md` variants before marking a file as incomplete.
 - The script will now correctly skip processing for files where both `NOTES.md` and `SUMMARY.md` exist, regardless of whether the generic `.md` filename exists.
 
+v05.04
+- Added new `GenerateMode` parameter (ValidateSet: "both", "notes", "summary") to selectively generate only missing MD files
+- NOTES.md generation now only runs when GenerateMode is "notes" or "both"
+- SUMMARY.md generation now only runs when GenerateMode is "summary" or "both"
+- This enables the master script to pass targeted GenerateMode based on which files are actually missing
+- Benefit: If only SUMMARY.md is missing (NOTES.md already exists), only SUMMARY.md is generated - no unnecessary re-transcription
+- Added console output reporting which MD files were generated after processing
+
 
 #>
 
@@ -226,7 +234,11 @@ param(
     [Parameter(Mandatory=$false)]
     [int]$MaxSpeakers = $null,  # Override max_speakers from profile defaults (optional)
 
-    [switch]$DebugMode # Enable verbose/debug output when specified
+    [switch]$DebugMode, # Enable verbose/debug output when specified
+    
+    [Parameter(Mandatory=$false)]
+    [ValidateSet("both", "notes", "summary")]
+    [string]$GenerateMode = "both"  # Which MD files to generate: "both", "notes", or "summary"
 )
 
 # --- Extract parameters from filename if provided ---
@@ -1182,8 +1194,8 @@ if ($TranscriptionEndTime -and $LogPath -and (Test-Path $LogPath)) {
 }
 
 # --- 8. Remote OpenAI-Compatible API Summarization Step (LM Studio on MacBook Pro) ---
-# Only generate NOTES.md if it doesn't already exist
-if (-not (Test-Path "$FullBase.NOTES.md")) {
+# Only generate NOTES.md if GenerateMode includes "notes" or "both" AND file doesn't already exist
+if (($GenerateMode -eq "notes" -or $GenerateMode -eq "both") -and -not (Test-Path "$FullBase.NOTES.md")) {
     Write-Host "Starting to process generate detailed notes with LM Studio..." -ForegroundColor Cyan
     
     Write-Progress -Activity "Generating Detailed Notes with LM Studio" -Status "Creating NOTES.md summary..." -PercentComplete 67
@@ -1287,8 +1299,8 @@ try {
 }
 
 # --- 8b. Ollama Summarization Step (original) ---
-# Only generate SUMMARY.MD if it doesn't already exist
-if (-not (Test-Path "$FullBase.SUMMARY.md")) {
+# Only generate SUMMARY.MD if GenerateMode includes "summary" or "both" AND file doesn't already exist
+if (($GenerateMode -eq "summary" -or $GenerateMode -eq "both") -and -not (Test-Path "$FullBase.SUMMARY.md")) {
     Write-Host "Starting to process generate summary with Ollama..." -ForegroundColor Cyan
     
     Write-Progress -Activity "Generating Summary with Ollama" -Status "Creating SUMMARY.MD summary..." -PercentComplete 68
@@ -1378,6 +1390,14 @@ try {
 }
 } else {
     Write-Host "SUMMARY.MD already exists, skipping..." -ForegroundColor Yellow
+}
+
+# Report what was generated
+$GeneratedFiles = @()
+if (Test-Path "$FullBase.NOTES.md") { $GeneratedFiles += "NOTES.md" }
+if (Test-Path "$FullBase.SUMMARY.md") { $GeneratedFiles += "SUMMARY.md" }
+if ($GeneratedFiles.Count -gt 0) {
+    Write-Host "Generated MD files: $($GeneratedFiles -join ', ')" -ForegroundColor Cyan
 }
 
 Write-Host "========================  File processing finished  ========================`n" -ForegroundColor Green
