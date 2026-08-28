@@ -1,0 +1,54 @@
+# ===========================================================================
+# Git Ignore Rules for WHISPER Project
+# ===========================================================================
+
+# Audio input and processed media files (never commit media binaries)
+*.m4a
+*.mp3
+*.wav
+*.flac
+*.mp4
+*.aac
+*.ogg
+*.wma
+*.mkv
+
+# Processed audio files with normalization tags
+*.PHONE-NORM_*
+*.MEETING-NORM_*
+*.DISTANT-NORM_*
+TempProcessedFiles/
+
+# Generated transcript files and AI notes
+*.json
+!config/*.json
+*.txt
+*.srt
+*.tsv
+*.vtt
+*.NOTES.md
+*.SUMMARY.md
+
+# Log files and run telemetry
+*.log
+logs/
+*.WHISPER.*.log
+*.PHONE-NORM_*.log
+*.MEETING-NORM_*.log
+*.DISTANT-NORM_*.log
+
+# Local environment & secret overrides
+config/config.local.json
+
+# Temporary files, caches, and scratchpads
+scratch/
+*.tmp
+*.bak
+*~
+.DS_Store
+Thumbs.db
+
+# PowerShell test and analysis caches
+.vscode/
+.idea/
+TestResults.xml

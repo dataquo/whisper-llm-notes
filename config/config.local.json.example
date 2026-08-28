@@ -1,0 +1,14 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "_comment": "Rename to config.local.json to override any settings for your local machine",
+  "whisper_service": {
+    "api_url": "http://localhost:9000/asr"
+  },
+  "ollama_service": {
+    "api_url": "http://localhost:11434/api/generate",
+    "model": "gemma3:4b"
+  },
+  "lm_studio_service": {
+    "api_url": "http://localhost:1234/v1/chat/completions"
+  }
+}

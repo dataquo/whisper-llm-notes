@@ -1,0 +1,53 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "whisper_service": {
+    "api_url": "http://localhost:9000/asr",
+    "model": "large-v3",
+    "docker_container_name": "whisper-asr-service",
+    "auto_restart_container": true,
+    "request_timeout_seconds": 7200
+  },
+  "ollama_service": {
+    "api_url": "http://localhost:11434/api/generate",
+    "model": "gemma3:4b",
+    "temperature": 0.3,
+    "unload_vram_after_processing": true
+  },
+  "lm_studio_service": {
+    "api_url": "http://localhost:1234/v1/chat/completions",
+    "model": "local-model",
+    "temperature": 0.3
+  },
+  "defaults": {
+    "profile": "phone",
+    "min_speakers": 2,
+    "max_speakers": 2,
+    "generate_mode": "both"
+  },
+  "profiles": {
+    "phone": {
+      "suffix": "PHONE-NORM_HP-LW-SP-LN",
+      "diarize": true,
+      "vad_filter": false,
+      "vad_onset": 0.5,
+      "vad_offset": 0.363,
+      "ffmpeg_filters": "highpass=f=200,lowpass=f=3500,speechnorm=e=4:r=0.0001:l=1,loudnorm=I=-16:TP=-1.5:LRA=11"
+    },
+    "meeting": {
+      "suffix": "MEETING-NORM_HP-LW-DN",
+      "diarize": true,
+      "vad_filter": true,
+      "vad_onset": 0.5,
+      "vad_offset": 0.363,
+      "ffmpeg_filters": "highpass=f=80,lowpass=f=8000,dynaudnorm=f=150:g=15,loudnorm=I=-16:TP=-1.5:LRA=11"
+    },
+    "distant": {
+      "suffix": "DISTANT-NORM_HP-LP-AC-SN",
+      "diarize": true,
+      "vad_filter": true,
+      "vad_onset": 0.5,
+      "vad_offset": 0.363,
+      "ffmpeg_filters": "highpass=f=200,lowpass=f=4000,acompressor=threshold=-24dB:ratio=4:attack=5:release=50,speechnorm=e=4:r=0.0001:l=1,loudnorm=I=-16:TP=-1.5:LRA=11"
+    }
+  }
+}

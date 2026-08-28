@@ -1,0 +1,65 @@
+name: CI Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  lint:
+    name: PowerShell Linting (PSScriptAnalyzer)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Install-Module -Name PSScriptAnalyzer -Force -Scope CurrentUser
+
+      - name: Run Script Analyzer
+        shell: pwsh
+        run: |
+          $settings = if (Test-Path "./PSScriptAnalyzerSettings.psd1") { "./PSScriptAnalyzerSettings.psd1" } else { $null }
+          $params = @{
+              Path = "./src"
+              Recurse = $true
+              Severity = @("Error", "Warning")
+          }
+          if ($settings) { $params["Settings"] = $settings }
+          
+          $results = Invoke-ScriptAnalyzer @params
+          if ($results) {
+              $results | Format-Table -AutoSize
+              $errors = $results | Where-Object { $_.Severity -eq "Error" }
+              if ($errors) {
+                  Write-Error "PSScriptAnalyzer found $($errors.Count) Error(s)."
+                  exit 1
+              }
+          } else {
+              Write-Host "PSScriptAnalyzer check passed with 0 issues!" -ForegroundColor Green
+          }
+
+  test:
+    name: Pester Unit Tests
+    runs-on: windows-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Pester 5
+        shell: pwsh
+        run: |
+          Install-Module -Name Pester -Force -Scope CurrentUser -MinimumVersion 5.3.0 -SkipPublisherCheck
+
+      - name: Run Pester Tests
+        shell: pwsh
+        run: |
+          $config = [PesterConfiguration]::Default
+          $config.Run.Path = "./tests"
+          $config.Output.Verbosity = "Detailed"
+          $config.Run.Exit = $true
+          Invoke-Pester -Configuration $config

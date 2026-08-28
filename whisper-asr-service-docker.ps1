@@ -240,8 +240,29 @@ param(
     
     [Parameter(Mandatory=$false)]
     [ValidateSet("both", "notes", "summary")]
-    [string]$GenerateMode = "both"  # Which MD files to generate: "both", "notes", or "summary"
+    [string]$GenerateMode = "both",  # Which MD files to generate: "both", "notes", or "summary"
+
+    [Parameter(Mandatory=$false)]
+    [string]$ConfigPath = $null      # Optional path to config.default.json or config.local.json
 )
+
+# --- Load External Configuration if available ---
+$AppConfig = $null
+$DefaultConfigCandidates = @(
+    $ConfigPath,
+    (Join-Path $PSScriptRoot "..\config\config.local.json"),
+    (Join-Path $PSScriptRoot "..\config\config.default.json"),
+    (Join-Path $PSScriptRoot "config\config.local.json"),
+    (Join-Path $PSScriptRoot "config\config.default.json")
+) | Where-Object { $_ -and (Test-Path $_) }
+
+if ($DefaultConfigCandidates.Count -gt 0) {
+    try {
+        $AppConfig = Get-Content -Path $DefaultConfigCandidates[0] -Raw -Encoding UTF8 | ConvertFrom-Json
+    } catch {
+        # Fallback to internal defaults
+    }
+}
 
 # --- Extract parameters from filename if provided ---
 function Extract-ParametersFromFilename {
@@ -845,7 +866,7 @@ if (Test-Path $TempProcessedFile) {
 
     # v03.02 - updated call to native whisperx endpoint with proper language parameter (working with diarization and correct language processing)
     # Prepare the URL with all parameters as Query Strings (with proper URL encoding)
-    $BaseUrl = "http://localhost:9000/asr"
+    $BaseUrl = if ($AppConfig -and $AppConfig.whisper_service -and $AppConfig.whisper_service.api_url) { $AppConfig.whisper_service.api_url } else { "http://localhost:9000/asr" }
 
     # Helper function to URL-encode strings
     function ConvertTo-UrlEncoded($String) {
@@ -1202,8 +1223,8 @@ if (($GenerateMode -eq "notes" -or $GenerateMode -eq "both") -and -not (Test-Pat
     
     Write-Progress -Activity "Generating Detailed Notes with LM Studio" -Status "Creating NOTES.md summary..." -PercentComplete 67
     
-$RemoteApiUrl = "http://10.0.0.162:1234/v1"
-$RemoteModel = "qwen/qwen3.6-35b-a3b"
+$RemoteApiUrl = if ($AppConfig -and $AppConfig.lm_studio_service -and $AppConfig.lm_studio_service.api_url) { $AppConfig.lm_studio_service.api_url } else { "http://10.0.0.162:1234/v1" }
+$RemoteModel = if ($AppConfig -and $AppConfig.lm_studio_service -and $AppConfig.lm_studio_service.model) { $AppConfig.lm_studio_service.model } else { "qwen/qwen3.6-35b-a3b" }
 $TranscriptPath = "$FullBase.txt"
 
 # Read the transcript file content to include in the prompt
@@ -1307,10 +1328,8 @@ if (($GenerateMode -eq "summary" -or $GenerateMode -eq "both") -and -not (Test-P
     
     Write-Progress -Activity "Generating Summary with Ollama" -Status "Creating SUMMARY.MD summary..." -PercentComplete 68
 
-$LocalApiUrl = "http://localhost:11434"
-# $OllamaModel = "gemma3:4b"
-$OllamaModel = "qwen3:8b"
-# $OllamaModel = "gpt-oss:20b"
+$LocalApiUrl = if ($AppConfig -and $AppConfig.ollama_service -and $AppConfig.ollama_service.api_url) { $AppConfig.ollama_service.api_url } else { "http://localhost:11434" }
+$OllamaModel = if ($AppConfig -and $AppConfig.ollama_service -and $AppConfig.ollama_service.model) { $AppConfig.ollama_service.model } else { "qwen3:8b" }
 $TranscriptPath = "$FullBase.txt"
 
 # Read the transcript file content to include in the prompt
