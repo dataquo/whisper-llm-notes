@@ -227,8 +227,8 @@ param(
     [string]$Profile,  # Will be extracted from filename or defaulted
 
     [Parameter(Mandatory=$false)]
-    [ValidateSet("cs", "sk", "en", "ru", "auto")]
-    [string]$Language, # Optional language code (e.g., "cs", "sk") - if not provided, API auto-detects
+    [ValidateSet("cs", "sk", "en", "ru", "auto", "de", "fr", "it", "pl", "es", "pt", "nl", "fi", "sv", "da", "no", "el", "tr", "hu", "ro", "pl", "uk", "de", "fr", "it", "es", "pt", "nl", "fi", "sv", "da", "no", "el", "tr", "hu", "ro", "pl", "uk")]
+    [string]$Language, # Optional language code (e.g., "cs", "sk", "ru") - if not provided, API auto-detects
 
     [Parameter(Mandatory=$false)]
     [int]$MinSpeakers = $null,  # Override min_speakers from profile defaults (optional)
@@ -745,64 +745,43 @@ if (Test-Path $TempProcessedFile) {
     # Preprocess audio file using FFmpeg before upload (profile-specific pipelines)
     Write-Host "Preprocessing audio file with FFmpeg ($Profile profile)..." -ForegroundColor Yellow
 
-    # v05.06 - Extract audio filter chain per profile (no string concatenation needed)
     switch ($Profile) {
-        "phone" {
-            $FfMpegAf = "highpass=f=200, lowpass=f=3500, speechnorm=e=10:r=0.0005:l=1, loudnorm=I=-16:TP=-1.5:LRA=11"
-        }
-        "meeting" {
-            $FfMpegAf = "highpass=f=80, lowpass=f=8000, dynaudnorm=p=0.9:m=50:s=5:g=15, loudnorm=I=-16:TP=-1.5:LRA=11"
-        }
-        "distant" {
-            $FfMpegAf = "highpass=f=200, lowpass=f=4000, acompressor=threshold=-20dB:ratio=10:attack=5:release=50:makeup=8, speechnorm=e=30:r=0.0001:l=1, loudnorm=I=-16:TP=-1.5:LRA=11"
-        }
-        default {
-            $FfMpegAf = "highpass=f=200, lowpass=f=3500, speechnorm=e=10:r=0.0005:l=1, loudnorm=I=-16:TP=-1.5:LRA=11"
+    "phone" {
+        # v03.03 - Phone: Speech-focused, narrow bandwidth (200-3500Hz), speech normalization -> WAV PCM uncompressed or MP3 (libmp3lame, 64kbps)
+        $FfMpegCmd = "ffmpeg.exe -i `"$FilePath`" -af `"highpass=f=200, lowpass=f=3500, speechnorm=e=10:r=0.0005:l=1, loudnorm=I=-16:TP=-1.5:LRA=11`" $FfMpegOutputParams -ar 16000 `"$TempProcessedFile`" -y"
+    }
+    "meeting" {
+        # v03.03 - Meeting: Full speech range (80-8000Hz), dynamic normalization for variable room acoustics -> WAV PCM uncompressed or MP3 (libmp3lame, 64kbps)
+        $FfMpegCmd = "ffmpeg.exe -i `"$FilePath`" -af `"highpass=f=80, lowpass=f=8000, dynaudnorm=p=0.9:m=50:s=5:g=15, loudnorm=I=-16:TP=-1.5:LRA=11`" $FfMpegOutputParams -ar 16000 `"$TempProcessedFile`" -y"
+    }
+    "distant" {
+        # v03.03 - Distant: Narrower bandwidth (200-4000Hz), compressor + speech normalization for noisy environments -> WAV PCM uncompressed or MP3 (libmp3lame, 64kbps)
+        $FfMpegCmd = "ffmpeg.exe -i `"$FilePath`" -af `"highpass=f=200, lowpass=f=4000, acompressor=threshold=-20dB:ratio=10:attack=5:release=50:makeup=8, speechnorm=e=30:r=0.0001:l=1, loudnorm=I=-16:TP=-1.5:LRA=11`" $FfMpegOutputParams -ar 16000 `"$TempProcessedFile`" -y"
+    }
+    default {
+        # v03.03 - Default: Same as phone profile -> WAV PCM uncompressed or MP3 (libmp3lame, 64kbps)
+        $FfMpegCmd = "ffmpeg.exe -i `"$FilePath`" -af `"highpass=f=200, lowpass=f=3500, speechnorm=e=10:r=0.0005:l=1, loudnorm=I=-16:TP=-1.5:LRA=11`" $FfMpegOutputParams -ar 16000 `"$TempProcessedFile`" -y"
         }
     }
 
-    # v05.06 - Set FFREPORT environment variable for FFmpeg logging with timestamped filename
+    # v04.08 - Set FFREPORT environment variable for FFmpeg logging with timestamped filename
+    # Use proper path handling with special characters
     $LogFileName = "$BaseName.$ProcessedSuffix.$(Get-Date -Format 'yyyyMMdd-HHmmss').log"
     $FFReportPath = Join-Path $OutputDir $LogFileName
     
-    # Ensure the directory exists
+    # Ensure the directory exists (in case of special character issues)
     if (-not (Test-Path $OutputDir)) {
         New-Item -ItemType Directory -Path $OutputDir | Out-Null
     }
     
     $env:FFREPORT = "file='$FFReportPath':level=48"
 
-    # v05.06 - Execute FFmpeg with array-based arguments (bypasses PowerShell string parsing)
-    $FfMpegArgs = @(
-        "-i"
-        $FilePath
-        "-af"
-        $FfMpegAf
-        $FfMpegOutputParams
-        "-ar"
-        "16000"
-        $TempProcessedFile
-        "-y"
-    )
+    # Execute FFmpeg command with proper quoting for special characters
+    $FfMpegResult = Invoke-Expression $FfMpegCmd
 
-    $FfMpegResult = & ffmpeg.exe @FfMpegArgs 2>&1
-
-    # v05.07 - Validate FFmpeg preprocessing succeeded by checking output file
-    if (-not (Test-Path $TempProcessedFile)) {
-        Write-Error "FFmpeg preprocessing failed - output file not created: $TempProcessedFile`n$FfMpegResult"
-        exit
-    }
-    
-    # Check file size to ensure data was written
-    $FileSize = Get-Item $TempProcessedFile | Measure-Object -Property Length -Sum | Select-Object -ExpandProperty Sum
-    if ($FileSize -eq 0) {
-        Write-Error "FFmpeg preprocessing failed - output file is empty: $TempProcessedFile`n$FfMpegResult"
-        exit
-    }
-    
     if ($LASTEXITCODE -ne 0) { 
-        Write-Error "FFmpeg preprocessing completed with warnings but output created. Exit Code: $LASTEXITCODE`n$FfMpegResult"
-        # Continue anyway since output file exists - FFmpeg may have succeeded despite warnings
+        Write-Error "FFmpeg preprocessing failed. Check ffmpeg is installed and accessible.`nExit Code: $LASTEXITCODE"
+        exit 
     }
     
     # v04.08 - Ensure FFREPORT log file was created
