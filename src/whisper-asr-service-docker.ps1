@@ -214,6 +214,15 @@ v05.04
 v05.05 
 - added VRAM Optimization Phase (Unload Ollama) models from VRAM as these models were preventing next whisper ASR iteration from loading into VRAM.
 - tested the VRAM optimization phase and confirmed it effectively frees up GPU memory based on https://gemini.google.com/app/a794450ab481b491
+
+v06.00
+- Self-Contained Execution Engine Refactoring: Centralized all container lifecycle, FFmpeg DSP, and API execution.
+- Deep Configuration Layering (Get-PipelineConfig): Base defaults (config.default.json) + local overrides (config.local.json).
+- Deterministic Container Lifecycle: Ensure-WhisperContainerRunning and Restart-WhisperContainer with API health readiness polling.
+- Added -DisableLLMs switch parameter to run pure WhisperX transcription without Ollama/LM Studio.
+- Multi-Channel Audio Downmix (-ac 1): Enforced mono 16kHz across all DSP profiles (supporting 5.1/7.1 HE-AAC).
+- Empty/Corrupt Audio Detection: Validates preprocessed audio > 1KB before upload to prevent Docker API crashes.
+- High-Performance Hardware Telemetry: Replaced Get-WmiObject with Get-CimInstance to eliminate 57s remoting freeze in PS7.
 #>
 
 
@@ -239,30 +248,202 @@ param(
     [switch]$DebugMode, # Enable verbose/debug output when specified
     
     [Parameter(Mandatory=$false)]
-    [ValidateSet("both", "notes", "summary")]
-    [string]$GenerateMode = "both",  # Which MD files to generate: "both", "notes", or "summary"
+    [ValidateSet("both", "notes", "summary", "none")]
+    [string]$GenerateMode = "both",  # Which MD files to generate: "both", "notes", "summary", or "none"
 
     [Parameter(Mandatory=$false)]
-    [string]$ConfigPath = $null      # Optional path to config.default.json or config.local.json
+    [string]$ConfigPath = $null,     # Optional path to config.default.json or config.local.json
+
+    [Parameter(Mandatory=$false)]
+    [Alias("DisableLLMs", "SkipLLM", "NoLLM")]
+    [switch]$DisableLLM              # When specified, skips all LLM summarization (LM Studio and Ollama)
 )
 
-# --- Load External Configuration if available ---
-$AppConfig = $null
-$DefaultConfigCandidates = @(
-    $ConfigPath,
-    (Join-Path $PSScriptRoot "..\config\config.local.json"),
-    (Join-Path $PSScriptRoot "..\config\config.default.json"),
-    (Join-Path $PSScriptRoot "config\config.local.json"),
-    (Join-Path $PSScriptRoot "config\config.default.json")
-) | Where-Object { $_ -and (Test-Path $_) }
+# --- Configuration Loading with Deep Merging (Base Defaults + Local Override) ---
+function Get-PipelineConfig {
+    param(
+        [string]$ExplicitConfigPath = $null,
+        [string]$ScriptDirectory = $PSScriptRoot
+    )
 
-if ($DefaultConfigCandidates.Count -gt 0) {
+    $DefaultPath = Join-Path $ScriptDirectory "..\config\config.default.json"
+    if (-not (Test-Path $DefaultPath)) {
+        $DefaultPath = Join-Path $ScriptDirectory "config\config.default.json"
+    }
+
+    $LocalPath = Join-Path $ScriptDirectory "..\config\config.local.json"
+    if (-not (Test-Path $LocalPath)) {
+        $LocalPath = Join-Path $ScriptDirectory "config\config.local.json"
+    }
+
+    $LoadedConfig = [PSCustomObject]@{}
+
+    if (Test-Path $DefaultPath) {
+        try {
+            $LoadedConfig = Get-Content -Path $DefaultPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        } catch {
+            Write-Warning "Failed to parse default config at $($DefaultPath): $_"
+        }
+    }
+
+    $OverridePath = $null
+    if ($ExplicitConfigPath -and (Test-Path $ExplicitConfigPath)) {
+        $OverridePath = $ExplicitConfigPath
+    } elseif (Test-Path $LocalPath) {
+        $OverridePath = $LocalPath
+    }
+
+    if ($OverridePath) {
+        try {
+            $OverrideConfig = Get-Content -Path $OverridePath -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($OverrideConfig) {
+                foreach ($prop in $OverrideConfig.PSObject.Properties) {
+                    if ($LoadedConfig.PSObject.Properties.Match($prop.Name).Count -gt 0 -and 
+                        $LoadedConfig.($prop.Name) -is [PSCustomObject] -and 
+                        $prop.Value -is [PSCustomObject]) {
+                        foreach ($subProp in $prop.Value.PSObject.Properties) {
+                            $LoadedConfig.($prop.Name).($subProp.Name) = $subProp.Value
+                        }
+                    } else {
+                        $LoadedConfig | Add-Member -MemberType NoteProperty -Name $prop.Name -Value $prop.Value -Force
+                    }
+                }
+            }
+        } catch {
+            Write-Warning "Failed to parse override config at $($OverridePath): $_"
+        }
+    }
+
+    return $LoadedConfig
+}
+
+# --- Service Readiness and Health Helpers ---
+function Test-WhisperServiceHealth {
+    param(
+        [string]$ApiUrl = "http://localhost:9000/asr",
+        [int]$TimeoutSeconds = 2
+    )
     try {
-        $AppConfig = Get-Content -Path $DefaultConfigCandidates[0] -Raw -Encoding UTF8 | ConvertFrom-Json
+        $uri = [System.Uri]$ApiUrl
+        $baseUri = "$($uri.Scheme)://$($uri.Authority)"
+        $response = Invoke-WebRequest -Uri "$baseUri/docs" -TimeoutSec $TimeoutSeconds -UseBasicParsing -ErrorAction SilentlyContinue
+        return ($null -ne $response -and $response.StatusCode -ge 200 -and $response.StatusCode -lt 400)
     } catch {
-        # Fallback to internal defaults
+        return $false
     }
 }
+
+function Wait-WhisperServiceReady {
+    param(
+        [string]$ApiUrl = "http://localhost:9000/asr",
+        [int]$MaxWaitSeconds = 30
+    )
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($sw.Elapsed.TotalSeconds -lt $MaxWaitSeconds) {
+        if (Test-WhisperServiceHealth -ApiUrl $ApiUrl -TimeoutSeconds 1) {
+            return $true
+        }
+        Start-Sleep -Seconds 1
+    }
+    return $false
+}
+
+function Ensure-WhisperContainerRunning {
+    param(
+        [PSCustomObject]$PipelineConfig
+    )
+    if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
+        return
+    }
+
+    $ContainerName = if ($PipelineConfig -and $PipelineConfig.whisper_service -and $PipelineConfig.whisper_service.docker_container_name) {
+        $PipelineConfig.whisper_service.docker_container_name
+    } else {
+        "whisper-asr-service"
+    }
+    $ApiUrl = if ($PipelineConfig -and $PipelineConfig.whisper_service -and $PipelineConfig.whisper_service.api_url) {
+        $PipelineConfig.whisper_service.api_url
+    } else {
+        "http://localhost:9000/asr"
+    }
+    $AutoRestart = if ($PipelineConfig -and $PipelineConfig.whisper_service -and ($null -ne $PipelineConfig.whisper_service.auto_restart_container)) {
+        [bool]$PipelineConfig.whisper_service.auto_restart_container
+    } else {
+        $true
+    }
+
+    # Check if container exists in Docker
+    $containerState = docker inspect --format="{{.State.Status}}" $ContainerName 2>$null
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($containerState)) {
+        if (Test-WhisperServiceHealth -ApiUrl $ApiUrl -TimeoutSeconds 1) {
+            return
+        }
+
+        Write-Warning "Configured Docker container '$ContainerName' was not found in Docker."
+        Write-Warning "If your container uses a different name, configure 'docker_container_name' in 'config/config.local.json'."
+        return
+    }
+
+    # If container exists but is not running, start it
+    if ($containerState -ne "running" -and $AutoRestart) {
+        Write-Host "Starting configured Whisper container '$ContainerName'..." -ForegroundColor Yellow
+        docker start $ContainerName | Out-Null
+        Write-Host "Waiting for Whisper API at $ApiUrl to become ready..." -ForegroundColor Cyan
+        if (Wait-WhisperServiceReady -ApiUrl $ApiUrl -MaxWaitSeconds 30) {
+            Write-Host "Whisper API is online and ready." -ForegroundColor Green
+        } else {
+            Write-Warning "Whisper API did not respond within 30 seconds after container start."
+        }
+    }
+}
+
+function Restart-WhisperContainer {
+    param(
+        [PSCustomObject]$PipelineConfig
+    )
+    if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
+        return
+    }
+
+    $ContainerName = if ($PipelineConfig -and $PipelineConfig.whisper_service -and $PipelineConfig.whisper_service.docker_container_name) {
+        $PipelineConfig.whisper_service.docker_container_name
+    } else {
+        "whisper-asr-service"
+    }
+    $ApiUrl = if ($PipelineConfig -and $PipelineConfig.whisper_service -and $PipelineConfig.whisper_service.api_url) {
+        $PipelineConfig.whisper_service.api_url
+    } else {
+        "http://localhost:9000/asr"
+    }
+    $AutoRestart = if ($PipelineConfig -and $PipelineConfig.whisper_service -and ($null -ne $PipelineConfig.whisper_service.auto_restart_container)) {
+        [bool]$PipelineConfig.whisper_service.auto_restart_container
+    } else {
+        $true
+    }
+
+    if (-not $AutoRestart) {
+        return
+    }
+
+    # Check if container exists in Docker
+    $containerState = docker inspect --format="{{.State.Status}}" $ContainerName 2>$null
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($containerState)) {
+        Write-Warning "Cannot restart container: '$ContainerName' was not found in Docker."
+        Write-Warning "Check 'docker_container_name' in 'config/config.local.json'."
+        return
+    }
+
+    Write-Host "Flushing GPU VRAM by restarting Docker container ($ContainerName)..." -ForegroundColor DarkYellow
+    docker restart $ContainerName | Out-Null
+    if (Wait-WhisperServiceReady -ApiUrl $ApiUrl -MaxWaitSeconds 30) {
+        Write-Host "Whisper API is back online and ready for next file." -ForegroundColor Green
+    } else {
+        Start-Sleep -Seconds 5
+    }
+}
+
+# --- Load External Configuration using unified layered loader ---
+$AppConfig = Get-PipelineConfig -ExplicitConfigPath $ConfigPath
 
 # --- Extract parameters from filename if provided ---
 function Extract-ParametersFromFilename {
@@ -388,9 +569,9 @@ function Get-SystemInfo {
         }
     }
     
-    # Try NVIDIA WMI for additional GPU info (for external NVIDIA GPUs)
+    # Try NVIDIA WMI/CIM for additional GPU info (for external NVIDIA GPUs)
     try {
-        $nvidiaGpus = Get-WmiObject -Namespace "root\NVIDIA" -Query "SELECT Name, DriverVersion, DeviceID FROM NVIDIA_GPUInformation" 2>$null
+        $nvidiaGpus = Get-CimInstance -Namespace "root\NVIDIA" -Query "SELECT Name, DriverVersion, DeviceID FROM NVIDIA_GPUInformation" -ErrorAction SilentlyContinue 2>$null
         if ($nvidiaGpus) {
             foreach ($ngpu in $nvidiaGpus) {
                 # Check if this GPU isn't already in our list
@@ -703,7 +884,10 @@ $ProfileSettings = @{
         "diarize"        = "true"
         "vad_filter"     = "true"
         "vad_onset"      = "0.1"
+        "vad_offset"     = "0.2"
         "initial_prompt" = "Nahrávka z dálky v místnosti."
+        "min_speakers"   = $MinSpeakers -replace "^$", "2"
+        "max_speakers"   = $MaxSpeakers -replace "^$", "5"
         "temperature"    = "0.2"
     }
 }
@@ -755,10 +939,22 @@ $TempProcessedFile = "$OutputDir\$BaseName.$ProcessedSuffix.$OutputFormat"
 
 
 
-# v03.06 - Check if processed file already exists to skip redundant FFmpeg conversion
+# v03.06 - Check if processed file already exists and is valid to skip redundant FFmpeg conversion
 Write-Host "Checking for existing processed file: $TempProcessedFile" -ForegroundColor Gray
 
+$ProcessedFileValid = $false
 if (Test-Path $TempProcessedFile) {
+    $fileItem = Get-Item -LiteralPath $TempProcessedFile -ErrorAction SilentlyContinue
+    if ($fileItem -and $fileItem.Length -gt 1024) {
+        $ProcessedFileValid = $true
+    } else {
+        $corruptSize = if ($fileItem) { $fileItem.Length } else { 0 }
+        Write-Warning "Processed file '$TempProcessedFile' exists but is corrupted/incomplete ($corruptSize bytes). Re-generating with FFmpeg..."
+        Remove-Item -LiteralPath $TempProcessedFile -Force -ErrorAction SilentlyContinue
+    }
+}
+
+if ($ProcessedFileValid) {
     Write-Host "Processed file already exists: $TempProcessedFile" -ForegroundColor Cyan
     Write-Host "Skipping FFmpeg preprocessing..." -ForegroundColor Yellow
 } else {
@@ -769,24 +965,24 @@ if (Test-Path $TempProcessedFile) {
     switch ($Profile) {
     "phone" {
         # v03.03 - Phone: Speech-focused, narrow bandwidth (200-3500Hz), speech normalization -> WAV PCM uncompressed or MP3 (libmp3lame, 64kbps)
-        $FfMpegCmd = "ffmpeg.exe -i `"$FilePath`" -af `"highpass=f=200, lowpass=f=3500, speechnorm=e=10:r=0.0005:l=1, loudnorm=I=-16:TP=-1.5:LRA=11`" $FfMpegOutputParams -ar 16000 `"$TempProcessedFile`" -y"
+        $FfMpegCmd = "ffmpeg.exe -i `"$FilePath`" -af `"highpass=f=200, lowpass=f=3500, speechnorm=e=10:r=0.0005:l=1, loudnorm=I=-16:TP=-1.5:LRA=11`" $FfMpegOutputParams -ac 1 -ar 16000 `"$TempProcessedFile`" -y"
     }
     "meeting" {
         # v03.03 - Meeting: Full speech range (80-8000Hz), dynamic normalization for variable room acoustics -> WAV PCM uncompressed or MP3 (libmp3lame, 64kbps)
-        $FfMpegCmd = "ffmpeg.exe -i `"$FilePath`" -af `"highpass=f=80, lowpass=f=8000, dynaudnorm=p=0.9:m=50:s=5:g=15, loudnorm=I=-16:TP=-1.5:LRA=11`" $FfMpegOutputParams -ar 16000 `"$TempProcessedFile`" -y"
+        $FfMpegCmd = "ffmpeg.exe -i `"$FilePath`" -af `"highpass=f=80, lowpass=f=8000, dynaudnorm=p=0.9:m=50:s=5:g=15, loudnorm=I=-16:TP=-1.5:LRA=11`" $FfMpegOutputParams -ac 1 -ar 16000 `"$TempProcessedFile`" -y"
     }
     "distant" {
         # v03.03 - Distant: Narrower bandwidth (200-4000Hz), compressor + speech normalization for noisy environments -> WAV PCM uncompressed or MP3 (libmp3lame, 64kbps)
-        $FfMpegCmd = "ffmpeg.exe -i `"$FilePath`" -af `"highpass=f=200, lowpass=f=4000, acompressor=threshold=-20dB:ratio=10:attack=5:release=50:makeup=8, speechnorm=e=30:r=0.0001:l=1, loudnorm=I=-16:TP=-1.5:LRA=11`" $FfMpegOutputParams -ar 16000 `"$TempProcessedFile`" -y"
+        $FfMpegCmd = "ffmpeg.exe -i `"$FilePath`" -af `"highpass=f=200, lowpass=f=4000, acompressor=threshold=-20dB:ratio=10:attack=5:release=50:makeup=8, speechnorm=e=30:r=0.0001:l=1, loudnorm=I=-16:TP=-1.5:LRA=11`" $FfMpegOutputParams -ac 1 -ar 16000 `"$TempProcessedFile`" -y"
     }
     default {
         # v03.03 - Default: Same as phone profile -> WAV PCM uncompressed or MP3 (libmp3lame, 64kbps)
-        $FfMpegCmd = "ffmpeg.exe -i `"$FilePath`" -af `"highpass=f=200, lowpass=f=3500, speechnorm=e=10:r=0.0005:l=1, loudnorm=I=-16:TP=-1.5:LRA=11`" $FfMpegOutputParams -ar 16000 `"$TempProcessedFile`" -y"
+        $FfMpegCmd = "ffmpeg.exe -i `"$FilePath`" -af `"highpass=f=200, lowpass=f=3500, speechnorm=e=10:r=0.0005:l=1, loudnorm=I=-16:TP=-1.5:LRA=11`" $FfMpegOutputParams -ac 1 -ar 16000 `"$TempProcessedFile`" -y"
         }
     }
 
-    # v04.08 - Set FFREPORT environment variable for FFmpeg logging with timestamped filename
-    # Use proper path handling with special characters
+    # Set FFREPORT environment variable for FFmpeg logging with timestamped filename
+    # Use relative filename to avoid Windows drive letter colon parsing issues in FFmpeg
     $LogFileName = "$BaseName.$ProcessedSuffix.$(Get-Date -Format 'yyyyMMdd-HHmmss').log"
     $FFReportPath = Join-Path $OutputDir $LogFileName
     
@@ -795,21 +991,35 @@ if (Test-Path $TempProcessedFile) {
         New-Item -ItemType Directory -Path $OutputDir | Out-Null
     }
     
-    $env:FFREPORT = "file='$FFReportPath':level=48"
+    $env:FFREPORT = "file='$LogFileName':level=48"
 
     # Execute FFmpeg command with proper quoting for special characters
     $FfMpegResult = Invoke-Expression $FfMpegCmd
 
     if ($LASTEXITCODE -ne 0) { 
         Write-Error "FFmpeg preprocessing failed. Check ffmpeg is installed and accessible.`nExit Code: $LASTEXITCODE"
-        exit 
+        exit 1
     }
     
-    # v04.08 - Ensure FFREPORT log file was created
+    # Move FFREPORT log file to OutputDir if created in current working directory
+    if ((Test-Path $LogFileName) -and ($LogFileName -ne $FFReportPath)) {
+        Move-Item -Path $LogFileName -Destination $FFReportPath -Force -ErrorAction SilentlyContinue
+    }
+
+    # Ensure FFREPORT log file was created
     if (Test-Path $FFReportPath) {
         Write-Host "FFmpeg report saved: $FFReportPath" -ForegroundColor Cyan
     } else {
         Write-Warning "FFmpeg log file not found at expected location: $FFReportPath"
+    }
+
+    # Verify that the generated audio file is valid and non-empty
+    $outputFileItem = Get-Item -LiteralPath $TempProcessedFile -ErrorAction SilentlyContinue
+    if (-not $outputFileItem -or $outputFileItem.Length -le 1024) {
+        $fileSize = if ($outputFileItem) { $outputFileItem.Length } else { 0 }
+        Write-Error "Audio preprocessing yielded an empty or invalid audio stream ($fileSize bytes). The source file may contain no valid audio track or silent/corrupt data."
+        Remove-Item -LiteralPath $TempProcessedFile -Force -ErrorAction SilentlyContinue
+        exit 1
     }
 
     Write-Host "Success! Audio preprocessed successfully: $TempProcessedFile" -ForegroundColor Green
@@ -867,31 +1077,58 @@ if (Test-Path $TempProcessedFile) {
     # v03.02 - updated call to native whisperx endpoint with proper language parameter (working with diarization and correct language processing)
     # Prepare the URL with all parameters as Query Strings (with proper URL encoding)
     $BaseUrl = if ($AppConfig -and $AppConfig.whisper_service -and $AppConfig.whisper_service.api_url) { $AppConfig.whisper_service.api_url } else { "http://localhost:9000/asr" }
+    $ModelName = if ($AppConfig -and $AppConfig.whisper_service -and $AppConfig.whisper_service.model) { $AppConfig.whisper_service.model } else { "large-v3" }
+    $DockerContainer = if ($AppConfig -and $AppConfig.whisper_service -and $AppConfig.whisper_service.docker_container_name) { 
+        $AppConfig.whisper_service.docker_container_name 
+    } else { 
+        "whisper-asr-service" 
+    }
+
+    # Ensure configured container is running and healthy
+    Ensure-WhisperContainerRunning -PipelineConfig $AppConfig
 
     # Helper function to URL-encode strings
     function ConvertTo-UrlEncoded($String) {
-        [System.Web.HttpUtility]::UrlEncode($String)
-
+        [System.Web.HttpUtility]::UrlEncode([string]$String)
     }
 
-    # Build URL with properly encoded parameters
-    $QueryParams = @{
-        "task"            = "transcribe"
-        "language"        = $Language
-        "model"           = "large-v3"                          # You can change this to "large-v3" or "medium" or "small" if you want faster processing with less accuracy
-        "diarize"         = $Config.diarize
-        "min_speakers"    = $Config.min_speakers
-        "max_speakers"    = $Config.max_speakers
-        "initial_prompt"  = $Config.initial_prompt
-        "vad_filter"      = $Config.vad_filter
-        "vad_onset"       = $Config.vad_onset
-        "vad_offset"      = $Config.vad_offset
-        "temperature"     = $Config.temperature
-        # "beam_size"       = "2"                                  # Optional: Adjust beam size as large model fails. (default is 5, lower is faster but less accurate, higher is slower but more accurate)
+    # Build query parameters list - strictly include only defined, non-empty values
+    $QueryParamList = [System.Collections.Generic.List[string]]::new()
+    $QueryParamList.Add("task=transcribe")
+    if (-not [string]::IsNullOrWhiteSpace($Language)) {
+        $QueryParamList.Add("language=$(ConvertTo-UrlEncoded $Language)")
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ModelName)) {
+        $QueryParamList.Add("model=$(ConvertTo-UrlEncoded $ModelName)")
+    }
+    if ($null -ne $Config.diarize -and "$($Config.diarize)" -ne "") {
+        $QueryParamList.Add("diarize=$(ConvertTo-UrlEncoded $Config.diarize)")
+    }
+    if ($null -ne $Config.min_speakers -and "$($Config.min_speakers)" -ne "") {
+        $QueryParamList.Add("min_speakers=$(ConvertTo-UrlEncoded $Config.min_speakers)")
+    }
+    if ($null -ne $Config.max_speakers -and "$($Config.max_speakers)" -ne "") {
+        $QueryParamList.Add("max_speakers=$(ConvertTo-UrlEncoded $Config.max_speakers)")
+    }
+    if (-not [string]::IsNullOrWhiteSpace($Config.initial_prompt)) {
+        $cleanPrompt = $Config.initial_prompt.Replace("`r`n", " ").Replace("`n", " ")
+        $QueryParamList.Add("initial_prompt=$(ConvertTo-UrlEncoded $cleanPrompt)")
+    }
+    if ($null -ne $Config.vad_filter -and "$($Config.vad_filter)" -ne "") {
+        $QueryParamList.Add("vad_filter=$(ConvertTo-UrlEncoded $Config.vad_filter)")
+    }
+    if ($null -ne $Config.vad_onset -and "$($Config.vad_onset)" -ne "") {
+        $QueryParamList.Add("vad_onset=$(ConvertTo-UrlEncoded $Config.vad_onset)")
+    }
+    if ($null -ne $Config.vad_offset -and "$($Config.vad_offset)" -ne "") {
+        $QueryParamList.Add("vad_offset=$(ConvertTo-UrlEncoded $Config.vad_offset)")
+    }
+    if ($null -ne $Config.temperature -and "$($Config.temperature)" -ne "") {
+        $QueryParamList.Add("temperature=$(ConvertTo-UrlEncoded $Config.temperature)")
     }
 
-    $QueryString = (($QueryParams.GetEnumerator() | ForEach-Object { "$($_.Key)=$(ConvertTo-UrlEncoded $_.Value)" }) -join "&")
-    $FullUrl = "$BaseUrl`?$QueryString"
+    $QueryString = $QueryParamList -join "&"
+    $FullUrl = if ($QueryString) { "$BaseUrl`?$QueryString" } else { $BaseUrl }
 
     # Create the transcription log file with all parameters
     $LogPath = New-TranscriptionLog `
@@ -917,19 +1154,33 @@ if (Test-Path $TempProcessedFile) {
     # Write Temp Processed File Path
     Write-Host "Audio file for transcription: $TempProcessedFile" -ForegroundColor Green 
 
-
-
-
-    
     # v04.08 - Check if the processed file exists (not original FilePath) before API call
     if (-not (Test-Path "$TempProcessedFile")) { 
         Write-Error "Processed audio file not found: $TempProcessedFile"
         exit 
     }
 
+    # Pre-transcription VRAM check: Unload Ollama models if any are occupying GPU memory
+    if (-not $DisableLLM -and (Get-Command ollama -ErrorAction SilentlyContinue)) {
+        try {
+            $ollamaCheck = Invoke-RestMethod -Uri "http://localhost:11434/api/tags" -TimeoutSec 1 -ErrorAction SilentlyContinue
+            if ($ollamaCheck) {
+                $ActiveModels = & ollama ps 2>$null | Select-Object -Skip 1 | ForEach-Object { ($_ -split '\s+')[0] } | Where-Object { $_ }
+                if ($ActiveModels) {
+                    foreach ($m in $ActiveModels) {
+                        Write-Host "Unloading Ollama model '$m' to free VRAM for WhisperX..." -ForegroundColor Yellow
+                        & ollama stop $m | Out-Null
+                    }
+                    Start-Sleep -Seconds 2
+                }
+            }
+        } catch {
+            # Continue
+        }
+    }
+
     # --- 4. API Call (Updated to Native Endpoint) ---
     Write-Host "Sending request to Native WhisperX Endpoint..." -ForegroundColor Gray
-
 
     Write-Host "Starting Transcription..." -ForegroundColor Cyan
     Write-Host "Profile: $Profile | Language: $Language" -ForegroundColor Yellow
@@ -937,28 +1188,14 @@ if (Test-Path $TempProcessedFile) {
     # Show initial progress state
     Write-Progress -Activity "Processing Audio File" -Status "Starting transcription..." -PercentComplete 20
 
-    # v04.08 - Execute the call using curl.exe for multipart/form-data
-    # Using curl.exe directly to handle file uploads properly
-    
+    # Execute the call using curl.exe for multipart/form-data
     Write-Host "Uploading file: $TempProcessedFile" -ForegroundColor Cyan
     
     try {
-        # Build curl arguments with proper quoting for special characters in paths
+        # Build curl arguments for multipart upload
         $curlArgs = @(
-            "-s", "-X", "POST", "$FullUrl"
-            "-H", "Content-Type: multipart/form-data"
-            "-F", "audio_file=@`"$TempProcessedFile`""
-            "-F", "task=transcribe"
-            "-F", "language=$Language"
-            "-F", "model=large-v3"
-            "-F", "diarize=$($Config.diarize)"
-            "-F", "min_speakers=$($Config.min_speakers)"
-            "-F", "max_speakers=$($Config.max_speakers)"
-            "-F", "initial_prompt=$(curl.exe --data-urlencode "$($Config.initial_prompt.Replace("`n", " "))" 2>$null)"  # Remove newlines from prompt, URL encode special characters
-            "-F", "vad_filter=$($Config.vad_filter)"
-            "-F", "vad_onset=$($Config.vad_onset)"
-            "-F", "vad_offset=$($Config.vad_offset)"
-            "-F", "temperature=$($Config.temperature)"
+            "-s", "-X", "POST", "$FullUrl",
+            "-F", "audio_file=@$TempProcessedFile"
         )
         
         # Execute curl command
@@ -995,7 +1232,6 @@ if (Test-Path $TempProcessedFile) {
         exit 
     }
 
-    
     # Parse response as JSON for error handling
     $ApiResult = $null
     
@@ -1015,20 +1251,24 @@ if (Test-Path $TempProcessedFile) {
     
     # Check for API error messages in the JSON response (GPU errors, CUDA failures, etc.)
     if ($ApiResult.detail) {
-        if ($ApiResult.detail -match "(?i)(cuda|gpu|memory|device unavailable)") {
-            Write-Host "GPU error detected: $($ApiResult.detail)" -ForegroundColor Red
+        $detailStr = if ($ApiResult.detail -is [string]) {
+            $ApiResult.detail
+        } else {
+            ($ApiResult.detail | ConvertTo-Json -Compress)
+        }
+
+        if ($detailStr -match "(?i)(cuda|gpu|memory|device unavailable|batch_size|out of memory)") {
+            Write-Host "GPU error detected: $detailStr" -ForegroundColor Red
             Write-Host "Skipping file generation and flushing GPU VRAM..." -ForegroundColor Yellow
             
             # Restart container to recover from GPU out-of-memory state
-            Write-Host "Flushing GPU VRAM by restarting Docker container..." -ForegroundColor DarkYellow
-            docker restart whisperx-api | Out-Null
-            Start-Sleep -Seconds 10
+            Restart-WhisperContainer -PipelineConfig $AppConfig
             Write-Host "Ready for next file." -ForegroundColor Green
-            exit
+            exit 1
         } else {
             # Non-GPU related error (e.g., validation errors)
-            Write-Error "Transcription failed.`nAPI Error: $($ApiResult.detail)"
-            exit 
+            Write-Error "Transcription failed.`nAPI Error: $detailStr"
+            exit 1
         }
     }
     
@@ -1037,7 +1277,7 @@ if (Test-Path $TempProcessedFile) {
     
     if (-not $ApiResult.segments) { 
         Write-Error "Transcription returned no segments.`nResponse: $($Response | ConvertTo-Json)"
-        exit 
+        exit 1
     }
     
     # v04.04 - Record transcription end time immediately after successful API response, before container restart
@@ -1049,7 +1289,6 @@ if (Test-Path $TempProcessedFile) {
     # Show generation state
     Write-Progress -Activity "Processing Audio File" -Status "Generating output files..." -PercentComplete 60
 
-
     # 1. JSON (Already contains speaker data)
     Write-Progress -Activity "Processing generated JSON File" -Status "Generating output files..." -PercentComplete 70
 
@@ -1058,10 +1297,7 @@ if (Test-Path $TempProcessedFile) {
     Start-Sleep -Seconds 1 # Small pause to ensure file is written before we read it again for other formats
     
     # --- 6. Automate the Container Restart--
-
-    Write-Host "Flushing GPU VRAM by restarting Docker container..." -ForegroundColor DarkYellow
-    docker restart whisperx-api | Out-Null
-    Start-Sleep -Seconds 5 # Give the API a few seconds to boot back up for the next run
+    Restart-WhisperContainer -PipelineConfig $AppConfig
 
 
 } else {
@@ -1218,12 +1454,13 @@ if ($TranscriptionEndTime -and $LogPath -and (Test-Path $LogPath)) {
 
 # --- 8. Remote OpenAI-Compatible API Summarization Step (LM Studio on MacBook Pro) ---
 # Only generate NOTES.md if GenerateMode includes "notes" or "both" AND file doesn't already exist
-if (($GenerateMode -eq "notes" -or $GenerateMode -eq "both") -and -not (Test-Path "$FullBase.NOTES.md")) {
+if (-not $DisableLLM -and ($GenerateMode -eq "notes" -or $GenerateMode -eq "both") -and -not (Test-Path "$FullBase.NOTES.md")) {
     Write-Host "Starting to process generate detailed notes with LM Studio..." -ForegroundColor Cyan
     
     Write-Progress -Activity "Generating Detailed Notes with LM Studio" -Status "Creating NOTES.md summary..." -PercentComplete 67
     
 $RemoteApiUrl = if ($AppConfig -and $AppConfig.lm_studio_service -and $AppConfig.lm_studio_service.api_url) { $AppConfig.lm_studio_service.api_url } else { "http://10.0.0.162:1234/v1" }
+$LmStudioEndpoint = if ($RemoteApiUrl -match "/chat/completions$") { $RemoteApiUrl } else { "$RemoteApiUrl/chat/completions" }
 $RemoteModel = if ($AppConfig -and $AppConfig.lm_studio_service -and $AppConfig.lm_studio_service.model) { $AppConfig.lm_studio_service.model } else { "qwen/qwen3.6-35b-a3b" }
 $TranscriptPath = "$FullBase.txt"
 
@@ -1282,7 +1519,7 @@ $RequestBodyRemote = @{
 
 try {
     # Use Invoke-RestMethod for the OpenAI-compatible API call
-    $RemoteSummaryResponse = Invoke-RestMethod -Uri "$RemoteApiUrl/chat/completions" `
+    $RemoteSummaryResponse = Invoke-RestMethod -Uri $LmStudioEndpoint `
                                               -Method POST `
                                               -ContentType "application/json" `
                                               -Body $RequestBodyRemote
@@ -1301,7 +1538,7 @@ try {
 
 | Parameter | Value |
 | :--- | :--- | :--- |
-| API Server | $RemoteApiUrl |
+| API Server | $LmStudioEndpoint |
 | Model | $RemoteModel |
 | Transcript Path | $TranscriptPath |
 | Inference | LM Studio |
@@ -1318,18 +1555,21 @@ try {
     Write-Host "LM Studio summarization failed: $_. Ensure LM Studio is running at $RemoteApiUrl with model '$RemoteModel' available." -ForegroundColor Red
 }
 } else {
-    Write-Host "NOTES.md already exists, skipping..." -ForegroundColor Yellow
+    if (-not $DisableLLM -and ($GenerateMode -eq "notes" -or $GenerateMode -eq "both")) {
+        Write-Host "NOTES.md already exists, skipping..." -ForegroundColor Yellow
+    }
 }
 
 # --- 8b. Ollama Summarization Step (original) ---
 # Only generate SUMMARY.MD if GenerateMode includes "summary" or "both" AND file doesn't already exist
-if (($GenerateMode -eq "summary" -or $GenerateMode -eq "both") -and -not (Test-Path "$FullBase.SUMMARY.md")) {
+if (-not $DisableLLM -and ($GenerateMode -eq "summary" -or $GenerateMode -eq "both") -and -not (Test-Path "$FullBase.SUMMARY.md")) {
     Write-Host "Starting to process generate summary with Ollama..." -ForegroundColor Cyan
     
     Write-Progress -Activity "Generating Summary with Ollama" -Status "Creating SUMMARY.MD summary..." -PercentComplete 68
 
 $LocalApiUrl = if ($AppConfig -and $AppConfig.ollama_service -and $AppConfig.ollama_service.api_url) { $AppConfig.ollama_service.api_url } else { "http://localhost:11434" }
-$OllamaModel = if ($AppConfig -and $AppConfig.ollama_service -and $AppConfig.ollama_service.model) { $AppConfig.ollama_service.model } else { "qwen3:8b" }
+$OllamaEndpoint = if ($LocalApiUrl -match "/api/generate$") { $LocalApiUrl } else { "$LocalApiUrl/api/generate" }
+$OllamaModel = if ($AppConfig -and $AppConfig.ollama_service -and $AppConfig.ollama_service.model) { $AppConfig.ollama_service.model } else { "gemma3:4b" }
 $TranscriptPath = "$FullBase.txt"
 
 # Read the transcript file content to include in the prompt
@@ -1377,7 +1617,7 @@ try {
     } | ConvertTo-Json
     
     # Use Invoke-RestMethod instead of curl.exe to avoid command-line length limitations
-    $SummaryResponse = Invoke-RestMethod -Uri "$LocalApiUrl/api/generate" `
+    $SummaryResponse = Invoke-RestMethod -Uri $OllamaEndpoint `
                                          -Method POST `
                                          -ContentType "application/json" `
                                          -Body $RequestBody
@@ -1394,7 +1634,7 @@ try {
 
 | Parameter | Value |
 | :--- | :--- | :--- |
-| API Server | $LocalApiUrl/api/generate |
+| API Server | $OllamaEndpoint |
 | Model | $OllamaModel |
 | Transcript Path | $TranscriptPath |
 | Inference | Ollama |
@@ -1410,15 +1650,23 @@ try {
     Write-Host "Ollama summarization failed: $_. Ensure Ollama is running and the model '$OllamaModel' is available." -ForegroundColor Red
 }
 } else {
-    Write-Host "SUMMARY.MD already exists, skipping..." -ForegroundColor Yellow
+    if ($DisableLLM -or $GenerateMode -eq "none") {
+        # LLM summarization disabled via -DisableLLMs
+    } elseif (Test-Path "$FullBase.SUMMARY.md") {
+        Write-Host "SUMMARY.md already exists, skipping..." -ForegroundColor Yellow
+    }
 }
 
 # Report what was generated
-$GeneratedFiles = @()
-if (Test-Path "$FullBase.NOTES.md") { $GeneratedFiles += "NOTES.md" }
-if (Test-Path "$FullBase.SUMMARY.md") { $GeneratedFiles += "SUMMARY.md" }
-if ($GeneratedFiles.Count -gt 0) {
-    Write-Host "Generated MD files: $($GeneratedFiles -join ', ')" -ForegroundColor Cyan
+if ($DisableLLM -or $GenerateMode -eq "none") {
+    Write-Host "LLM summarization skipped (-DisableLLMs active)." -ForegroundColor DarkGray
+} else {
+    $GeneratedFiles = @()
+    if (Test-Path "$FullBase.NOTES.md") { $GeneratedFiles += "NOTES.md" }
+    if (Test-Path "$FullBase.SUMMARY.md") { $GeneratedFiles += "SUMMARY.md" }
+    if ($GeneratedFiles.Count -gt 0) {
+        Write-Host "Generated MD files: $($GeneratedFiles -join ', ')" -ForegroundColor Cyan
+    }
 }
 
 
@@ -1426,21 +1674,28 @@ if ($GeneratedFiles.Count -gt 0) {
 # --- 9a VRAM Optimization Phase (Unload Ollama) v05.05---
 Write-Host "--- Checking VRAM Allocation ---" -ForegroundColor Cyan
 
-if (Get-Command ollama -ErrorAction SilentlyContinue) {
-    # Dynamically find any model currently loaded in the GPU
-    $ActiveModels = & ollama ps | Select-Object -Skip 1 | ForEach-Object { ($_ -split '\s+')[0] } | Where-Object { $_ }
-    
-    if ($ActiveModels) {
-        # Save the model names so we can optionally reload them later
-        $ModelsToRestore = $ActiveModels
-        foreach ($Model in $ActiveModels) {
-            Write-Host "Temporarily unloading Ollama model '$Model' to free up GPU..." -ForegroundColor Yellow
-            & ollama stop $Model
+if (-not $DisableLLM -and (Get-Command ollama -ErrorAction SilentlyContinue)) {
+    try {
+        $ollamaCheck = Invoke-RestMethod -Uri "http://localhost:11434/api/tags" -TimeoutSec 1 -ErrorAction SilentlyContinue
+        if ($ollamaCheck) {
+            # Dynamically find any model currently loaded in the GPU
+            $ActiveModels = & ollama ps 2>$null | Select-Object -Skip 1 | ForEach-Object { ($_ -split '\s+')[0] } | Where-Object { $_ }
+            
+            if ($ActiveModels) {
+                # Save the model names so we can optionally reload them later
+                $ModelsToRestore = $ActiveModels
+                foreach ($Model in $ActiveModels) {
+                    Write-Host "Temporarily unloading Ollama model '$Model' to free up GPU..." -ForegroundColor Yellow
+                    & ollama stop $Model | Out-Null
+                }
+                # Give the graphics card a brief moment to clear its cache
+                Start-Sleep -Seconds 2
+            } else {
+                Write-Host "GPU is clear. No active Ollama models found in VRAM." -ForegroundColor Green
+            }
         }
-        # Give the graphics card a brief moment to clear its cache
-        Start-Sleep -Seconds 2
-    } else {
-        Write-Host "GPU is clear. No active Ollama models found in VRAM." -ForegroundColor Green
+    } catch {
+        # Continue
     }
 }
 

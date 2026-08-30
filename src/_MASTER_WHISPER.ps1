@@ -7,31 +7,21 @@
     and invokes the whisper-asr-service-docker engine for missing items.
 .PARAMETER InputFolder
     Path to the directory containing audio recordings. Defaults to current directory.
-.PARAMETER ConfigPath
-    Optional path to configuration JSON file. Defaults to config/config.default.json.
+.PARAMETER DisableLLM
+    When specified (aliases: DisableLLMs, SkipLLM, NoLLM), skips all LLM summarization (Ollama and LM Studio).
+.NOTES
+    Version: v06.00
+    - Refactored into pure batch orchestrator decoupled from container management.
+    - Added -DisableLLMs switch parameter.
+    - Single source of truth inside src/ directory.
 #>
 
 param(
     [string]$InputFolder = ".",
-    [string]$ConfigPath = $null
+    [string]$ConfigPath = $null,
+    [Alias("DisableLLMs", "SkipLLM", "NoLLM")]
+    [switch]$DisableLLM
 )
-
-# Load configuration if available
-$Config = $null
-$DefaultConfigPaths = @(
-    $ConfigPath,
-    (Join-Path $PSScriptRoot "..\config\config.default.json"),
-    (Join-Path $PSScriptRoot "config\config.default.json"),
-    (Join-Path (Get-Location) "config\config.default.json")
-) | Where-Object { $_ -and (Test-Path $_) }
-
-if ($DefaultConfigPaths.Count -gt 0) {
-    try {
-        $Config = Get-Content -Path $DefaultConfigPaths[0] -Raw -Encoding UTF8 | ConvertFrom-Json
-    } catch {
-        Write-Warning "Could not parse config file at $($DefaultConfigPaths[0]): $_"
-    }
-}
 
 # Helper function to determine which MD files need generation
 function Get-MissingMdFiles {
@@ -102,15 +92,11 @@ function Parse-FileNameParameters {
     }
     
     # Default: no pattern match, use default profile with auto language detection
-    $defaultProfile = if ($Config -and $Config.defaults.profile) { $Config.defaults.profile } else { "phone" }
-    $defaultMinSpeakers = if ($Config -and $Config.defaults.min_speakers) { $Config.defaults.min_speakers } else { 2 }
-    $defaultMaxSpeakers = if ($Config -and $Config.defaults.max_speakers) { $Config.defaults.max_speakers } else { 2 }
-
     return @{
-        Profile     = $defaultProfile
+        Profile     = "phone"
         Language    = ""
-        MinSpeakers = $defaultMinSpeakers
-        MaxSpeakers = $defaultMaxSpeakers
+        MinSpeakers = 2
+        MaxSpeakers = 2
     }
 }
 
@@ -123,9 +109,9 @@ Write-Host "Scanning folder: $InputFolder" -ForegroundColor Yellow
 # Get files from top-level only (non-recursive) that need processing
 $AudioFiles = @()
 
-# Check for original audio files (.m4a, .flac, .mp4, .mp3)
+# Check for original audio files (.m4a, .flac, .mp4, .mp3), excluding already-normalized intermediate files
 $OriginalAudioFiles = Get-ChildItem -Path $InputFolder -File -ErrorAction SilentlyContinue | Where-Object {
-    $_.Extension.ToLower() -in $AudioExtensions
+    $_.Extension.ToLower() -in $AudioExtensions -and $_.Name -notmatch '\.(PHONE-NORM_|MEETING-NORM_|DISTANT-NORM_)'
 }
 
 if (-not $OriginalAudioFiles) {
@@ -258,7 +244,11 @@ foreach ($File in $AudioFiles) {
     $MdCheck = Get-MissingMdFiles -BasePath "$($File.DirectoryName)\$($File.BaseName)"
     
     # Determine if processing is needed
-    $NeedsProcessing = $AnyNonMdMissingOrEmpty -or $MdCheck.NotesMissing -or $MdCheck.SummaryMissing
+    $NeedsProcessing = if ($DisableLLM) {
+        $AnyNonMdMissingOrEmpty
+    } else {
+        $AnyNonMdMissingOrEmpty -or $MdCheck.NotesMissing -or $MdCheck.SummaryMissing
+    }
     
     if ($NeedsProcessing) {
         Write-Host "Transcript incomplete for $($File.Name) (missing or empty files detected) - starting file processing..." -ForegroundColor Yellow
@@ -270,8 +260,8 @@ foreach ($File in $AudioFiles) {
         
         # Report which files are missing
         $MissingFiles = @()
-        if ($MdCheck.NotesMissing) { $MissingFiles += "NOTES.md" }
-        if ($MdCheck.SummaryMissing) { $MissingFiles += "SUMMARY.md" }
+        if (-not $DisableLLM -and $MdCheck.NotesMissing) { $MissingFiles += "NOTES.md" }
+        if (-not $DisableLLM -and $MdCheck.SummaryMissing) { $MissingFiles += "SUMMARY.md" }
         if ($AnyNonMdMissingOrEmpty) {
             foreach ($ext in $NonMdExtensions) {
                 if (-not (Test-Path "$($File.DirectoryName)\$($File.BaseName)$ext")) {
@@ -282,7 +272,9 @@ foreach ($File in $AudioFiles) {
         Write-Host "  Missing files: $($MissingFiles -join ', ')" -ForegroundColor DarkYellow
         
         # Determine what to process based on what's missing
-        if ($MdCheck.NotesMissing -and $MdCheck.SummaryMissing -and -not $AnyNonMdMissingOrEmpty) {
+        if ($DisableLLM) {
+            $GenerateMode = "none"
+        } elseif ($MdCheck.NotesMissing -and $MdCheck.SummaryMissing -and -not $AnyNonMdMissingOrEmpty) {
             # Only MD files missing, no non-MD files missing - generate only MD files
             $GenerateMode = $MdCheck.GenerateMode
         } elseif ($AnyNonMdMissingOrEmpty) {
@@ -300,12 +292,24 @@ foreach ($File in $AudioFiles) {
             'GenerateMode' = $GenerateMode
         }
         
+        if ($DisableLLM) {
+            $InvokeParams['DisableLLM'] = $true
+        }
+
+        if ($ConfigPath) {
+            $InvokeParams['ConfigPath'] = $ConfigPath
+        }
+        
         # Add Language parameter only if it's not empty (to allow auto-detection)
         if ($Params.Language -ne "") {
             $InvokeParams['Language'] = $Params.Language
         }
         
-        & $ScriptPath @InvokeParams
+        try {
+            & $ScriptPath @InvokeParams
+        } catch {
+            Write-Error "Error processing $($File.Name): $_"
+        }
     } else {
         Write-Host "Skipping $($File.Name) - all required transcripts are present and non-empty." -ForegroundColor Yellow
     }

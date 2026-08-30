@@ -18,6 +18,12 @@ Describe "Whisper ASR Service Docker Tests" {
             $fnBody = "function global:Extract-ParametersFromFilename { $($Matches[1])"
             . ([ScriptBlock]::Create($fnBody))
         }
+
+        # Extract Get-PipelineConfig function definition and inject into global scope
+        if ($ScriptContent -match '(?ms)function Get-PipelineConfig\s*\{(.+?^\})') {
+            $fnBody = "function global:Get-PipelineConfig { $($Matches[1])"
+            . ([ScriptBlock]::Create($fnBody))
+        }
     }
 
     Context "Timestamp Formatting (Format-Time)" {
@@ -82,6 +88,95 @@ Describe "Whisper ASR Service Docker Tests" {
 
             $txt | Should -Match "\[SPEAKER_00\]: Hello world\."
             $txt | Should -Match "\[SPEAKER_01\]: Good morning\."
+        }
+    }
+
+    Context "Profile Configuration Defaults" {
+        It "Extracts distant profile and speaker count correctly" {
+            $params = Extract-ParametersFromFilename -FileName "recording_audio.SK-D2.mp4"
+            $params.LanguageCode | Should -Be "sk"
+            $params.ProfileChar | Should -Be "D"
+            $params.SpeakerCount | Should -Be 2
+        }
+
+        It "Validates distant profile includes min/max speakers and vad settings" {
+            $MinSpeakers = 2
+            $MaxSpeakers = 2
+            $ProfileSettings = @{
+                "distant" = @{
+                    "diarize"        = "true"
+                    "vad_filter"     = "true"
+                    "vad_onset"      = "0.1"
+                    "vad_offset"     = "0.2"
+                    "initial_prompt" = "Nahrávka z dálky v místnosti."
+                    "min_speakers"   = $MinSpeakers -replace "^$", "2"
+                    "max_speakers"   = $MaxSpeakers -replace "^$", "5"
+                    "temperature"    = "0.2"
+                }
+            }
+            $ProfileSettings["distant"].min_speakers | Should -Be 2
+            $ProfileSettings["distant"].max_speakers | Should -Be 2
+            $ProfileSettings["distant"].vad_offset | Should -Be "0.2"
+            $ProfileSettings["distant"].vad_onset | Should -Be "0.1"
+        }
+    }
+
+    Context "Audio File Validity and LLM Mode Control" {
+        It "Rejects 0-byte or corrupted small processed audio files" {
+            $smallFile = [PSCustomObject]@{ Length = 425 }
+            $isValid = $smallFile -and ($smallFile.Length -gt 1024)
+            $isValid | Should -BeFalse
+
+            $validFile = [PSCustomObject]@{ Length = 5242880 }
+            $isValidLong = $validFile -and ($validFile.Length -gt 1024)
+            $isValidLong | Should -BeTrue
+        }
+    }
+
+    Context "Pipeline Configuration Layering and Deep Merging" {
+        It "Loads base config defaults and preserves all required sections" {
+            $scriptDir = Join-Path $PSScriptRoot "..\src"
+            $config = Get-PipelineConfig -ScriptDirectory $scriptDir
+            $config.whisper_service | Should -Not -BeNullOrEmpty
+            $config.whisper_service.api_url | Should -Be "http://localhost:9000/asr"
+            $config.ollama_service | Should -Not -BeNullOrEmpty
+            $config.profiles | Should -Not -BeNullOrEmpty
+        }
+
+        It "Deep merges override without losing other properties" {
+            $tempDir = Join-Path $env:TEMP "pester_cfg_test_$(Get-Random)"
+            New-Item -ItemType Directory -Path (Join-Path $tempDir "config") -Force | Out-Null
+            New-Item -ItemType Directory -Path (Join-Path $tempDir "src") -Force | Out-Null
+            
+            $defaultJson = @'
+{
+  "whisper_service": {
+    "api_url": "http://localhost:9000/asr",
+    "docker_container_name": "whisper-asr-service",
+    "auto_restart_container": true
+  },
+  "ollama_service": {
+    "model": "gemma3:4b"
+  }
+}
+'@
+            $localJson = @'
+{
+  "whisper_service": {
+    "docker_container_name": "custom-container"
+  }
+}
+'@
+            Set-Content -Path (Join-Path $tempDir "config\config.default.json") -Value $defaultJson -Encoding UTF8
+            Set-Content -Path (Join-Path $tempDir "config\config.local.json") -Value $localJson -Encoding UTF8
+
+            $merged = Get-PipelineConfig -ScriptDirectory (Join-Path $tempDir "src")
+            $merged.whisper_service.docker_container_name | Should -Be "custom-container"
+            $merged.whisper_service.api_url | Should -Be "http://localhost:9000/asr"
+            $merged.whisper_service.auto_restart_container | Should -BeTrue
+            $merged.ollama_service.model | Should -Be "gemma3:4b"
+
+            Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
 }

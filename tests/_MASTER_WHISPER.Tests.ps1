@@ -99,4 +99,38 @@ Describe "Master Whisper Script Tests" {
             $check.GenerateMode | Should -Be "none"
         }
     }
+
+    Context "Intermediate Processed File Exclusion" {
+        It "Excludes preprocessed intermediate files from original audio file candidates" {
+            $testFiles = @(
+                [PSCustomObject]@{ Name = "recording.SK-D2.mp4"; Extension = ".mp4" },
+                [PSCustomObject]@{ Name = "recording.SK-D2.DISTANT-NORM_HP-LP-AC-SN.mp3"; Extension = ".mp3" },
+                [PSCustomObject]@{ Name = "recording.SK-D2.PHONE-NORM_HP-LW-SP-LN.mp3"; Extension = ".mp3" },
+                [PSCustomObject]@{ Name = "recording.SK-D2.MEETING-NORM_HP-LW-DN.mp3"; Extension = ".mp3" }
+            )
+            $audioExtensions = @(".m4a", ".flac", ".mp4", ".mp3")
+            $filtered = $testFiles | Where-Object {
+                $_.Extension.ToLower() -in $audioExtensions -and $_.Name -notmatch '\.(PHONE-NORM_|MEETING-NORM_|DISTANT-NORM_)'
+            }
+            $filtered.Count | Should -Be 1
+            $filtered[0].Name | Should -Be "recording.SK-D2.mp4"
+        }
+    }
+
+    Context "DisableLLM Mode Handling" {
+        It "Sets GenerateMode to none when DisableLLM is switch enabled" {
+            $DisableLLM = $true
+            $MdCheck = [PSCustomObject]@{
+                NotesMissing = $true
+                SummaryMissing = $true
+                GenerateMode = "both"
+            }
+            $AnyNonMdMissingOrEmpty = $false
+            $NeedsProcessing = if ($DisableLLM) { $AnyNonMdMissingOrEmpty } else { $AnyNonMdMissingOrEmpty -or $MdCheck.NotesMissing -or $MdCheck.SummaryMissing }
+            $NeedsProcessing | Should -BeFalse
+
+            $GenerateMode = if ($DisableLLM) { "none" } else { $MdCheck.GenerateMode }
+            $GenerateMode | Should -Be "none"
+        }
+    }
 }

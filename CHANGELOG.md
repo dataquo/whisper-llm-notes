@@ -8,6 +8,26 @@ All notable changes to the WHISPER project are documented in this file. The proj
 
 ---
 
+## [v06.00] - 2026-08-30
+### Added
+* **Architecture Decision Record 0007** (`docs/adr/0007-unified-container-lifecycle-and-config-layering.md`).
+* **Deep Configuration Layering (`Get-PipelineConfig`)**: Recursively overlays machine-specific `config/config.local.json` on top of `config/config.default.json` without losing baseline profile or model settings.
+* **Deterministic Container Lifecycle Manager**:
+  * `Ensure-WhisperContainerRunning`: Verifies container status via Docker CLI, starts stopped containers, and polls `/docs` or `/health` until the API is online.
+  * `Restart-WhisperContainer`: Restarts the configured container post-transcription and upon CUDA OOM errors, waiting for API readiness before the next iteration.
+* **`-DisableLLMs` Switch**: Added switch (aliases: `-DisableLLMs`, `-DisableLLM`, `-SkipLLM`, `-NoLLM`) to `_MASTER_WHISPER.ps1` and `whisper-asr-service-docker.ps1` to run pure WhisperX transcription without Ollama or LM Studio.
+* **Multi-Channel Downmixing (`-ac 1`)**: Added explicit mono downmixing across all FFmpeg DSP profiles (`phone`, `meeting`, `distant`) to support 5.1/7.1 HE-AAC audio tracks.
+* **Corrupt & Empty Audio File Detection**: Validates that intermediate preprocessed audio is `Length > 1024` bytes, preventing corrupt headers from causing downstream WhisperX API crashes.
+* **Native CIM Hardware Telemetry**: Replaced deprecated `Get-WmiObject` with `Get-CimInstance` in `Get-SystemInfo`, eliminating a 57-second PowerShell 7 implicit remoting delay.
+
+### Changed
+* **Architectural Decoupling**: Streamlined `src/_MASTER_WHISPER.ps1` from ~480 to ~220 lines into a pure batch orchestrator, centralizing all container lifecycle, FFmpeg DSP, and API execution inside `src/whisper-asr-service-docker.ps1`.
+* **Single Source of Truth**: Standardized on `src/` as the sole codebase location and purged duplicate root scripts.
+* **AI Agent Git & Commit Rules**: Updated `AGENTS.md` and `GEMINI.md` to enforce commit message generation ONLY on explicit user request.
+* **Expanded Test Suite**: Added Pester unit tests for configuration deep merging, audio file validity, and `-DisableLLMs` mode.
+
+---
+
 ## [v5.6.1] - 2026-08-30
 ### Added
 * Comprehensive Architecture Decision Records (`docs/adr/0001` through `0006`).

@@ -1,8 +1,11 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "_comment": "Rename to config.local.json to override any settings for your local machine",
+  "_comment": "Rename to config.local.json to override any settings for your local machine without modifying tracked files.",
   "whisper_service": {
-    "api_url": "http://localhost:9000/asr"
+    "api_url": "http://localhost:9000/asr",
+    "docker_container_name": "whisper-asr-service",
+    "auto_restart_container": true,
+    "model": "large-v3"
   },
   "ollama_service": {
     "api_url": "http://localhost:11434/api/generate",

@@ -3,25 +3,31 @@
 [![CI Pipeline](https://github.com/dataquo/WHISPER/actions/workflows/ci.yml/badge.svg)](https://github.com/dataquo/WHISPER/actions/workflows/ci.yml)
 [![PowerShell 7.0+](https://img.shields.io/badge/PowerShell-7.0%2B-blue.svg)](https://github.com/PowerShell/PowerShell)
 [![Docker](https://img.shields.io/badge/Docker-WhisperX-2496ED.svg)](https://www.docker.com/)
+[![Version](https://img.shields.io/badge/Version-v06.00-brightgreen.svg)](CHANGELOG.md)
 
-A resilient, high-throughput batch audio transcription and AI summarization orchestrator powered by **PowerShell**, **FFmpeg**, **WhisperX (Docker)**, **Ollama**, and **LM Studio**.
+A resilient, high-throughput batch audio transcription and AI summarization pipeline powered by **PowerShell 7+**, **FFmpeg**, **WhisperX (Docker)**, **Ollama**, and **LM Studio**.
 
 ---
 
 ## 🌟 Key Features
 
-* **Smart Batch Orchestration**: Automatically scans directories for pending audio files, detects missing output formats, and executes only necessary generation stages without redundant re-transcriptions.
-* **Intelligent Filename Convention**: Automatically configures language, acoustic profile, and speaker count directly from file naming patterns (e.g. `recording.SK-M3.mp3`).
-* **Profile-Specific Audio Preprocessing**:
-  * **`phone`**: Narrow voice bandwidth (200–3500 Hz), speech normalization, broadcast loudness standards.
-  * **`meeting`**: Broad frequency range (80–8000 Hz) with dynamic audio normalization for varying speaker distances.
-  * **`distant`**: Adaptive compression + noise reduction for ambient room recordings.
-* **Speaker Diarization & Multi-Format Output**: Generates `.json`, `.txt`, `.srt`, `.vtt`, and `.tsv` in a single GPU pass.
-* **Dual AI Summaries**:
+* **Smart Batch Orchestration**: Automatically scans folders for media files, inspects existing output formats, and executes only missing stages without redundant re-transcriptions.
+* **Intelligent Filename Tagging**: Automatically detects language, DSP profile, and speaker counts directly from file naming patterns (e.g. `recording.SK-M3.mp3`).
+* **Profile-Based FFmpeg Audio DSP**:
+  * **`phone`**: Narrow voice bandwidth (200–3500 Hz), speech normalization, broadcast loudness standards (-16 LUFS).
+  * **`meeting`**: Broad frequency range (80–8000 Hz) with dynamic audio normalization for variable acoustics.
+  * **`distant`**: Adaptive compression + noise suppression for noisy or far-field microphones.
+  * **Multi-Channel Compatibility**: Automatically downmixes multi-channel audio (e.g. 5.1, 7.1 HE-AAC) to mono 16 kHz.
+* **Speaker Diarization & Multi-Format Export**: Generates `.json`, `.txt`, `.srt`, `.vtt`, and `.tsv` in a single GPU pass.
+* **Dual AI Summarization**:
   * **`NOTES.md`**: Detailed structured meeting notes generated via LM Studio / OpenAI-compatible API.
-  * **`SUMMARY.md`**: Concise structured summaries generated via Ollama.
-* **Hardware Telemetry & Performance Metrics**: Logs Real-Time Factor (RTF), Tokens Per Second (TPS), and full CPU/GPU/RAM hardware telemetry to structured JSON logs.
-* **VRAM Memory Optimization**: Automatically manages GPU resources by restarting containers and clearing Ollama memory caches between iterations.
+  * **`SUMMARY.md`**: Concise structured executive summaries generated via Ollama.
+  * **`-DisableLLMs` Mode**: Pure transcription mode to skip LLM summarization when fast ASR is needed.
+* **Deterministic Docker Lifecycle & VRAM Flushing**:
+  * Automatically starts stopped containers and polls `/docs` or `/health` until ready.
+  * Flushes GPU VRAM after each file and recovers from CUDA out-of-memory errors by restarting the configured container.
+* **Deep Configuration Layering**: Base defaults in `config.default.json` with untracked machine-specific overrides in `config.local.json`.
+* **Zero-Overhead Hardware Telemetry**: Collects CPU, RAM, and GPU hardware metrics via native CIM queries.
 
 ---
 
@@ -31,39 +37,45 @@ A resilient, high-throughput batch audio transcription and AI summarization orch
 WHISPER/
 ├── .github/
 │   └── workflows/
-│       ├── ci.yml                 # PSScriptAnalyzer linting + Pester 5 unit tests
-│       └── release.yml            # GitHub Release automation on semantic tag push
+│       ├── ci.yml                 # PSScriptAnalyzer linting + Pester 5/6 unit tests
+│       └── release.yml            # Automated GitHub releases on tag push
 ├── src/
-│   ├── _MASTER_WHISPER.ps1        # Batch orchestrator
-│   └── whisper-asr-service-docker.ps1 # Core WhisperX + FFmpeg + LLM engine
+│   ├── _MASTER_WHISPER.ps1        # Pure batch orchestrator
+│   └── whisper-asr-service-docker.ps1 # Self-contained execution engine
 ├── config/
-│   ├── config.default.json        # Default API endpoints, profiles, and models
-│   └── config.local.json.example  # Template for local environment overrides
+│   ├── config.default.json        # Base defaults (Tracked in Git)
+│   ├── config.local.json.example  # Template for machine overrides
+│   └── config.local.json          # Machine overrides (Git-ignored)
 ├── tests/
-│   ├── _MASTER_WHISPER.Tests.ps1  # Unit tests for parameter extraction & checks
-│   └── whisper-asr-service-docker.Tests.ps1 # Unit tests for timecodes & converters
-├── .gitattributes                # Consistent CRLF line endings for PowerShell
-├── .gitignore                    # Media, transcript, and secret exclusions
+│   ├── _MASTER_WHISPER.Tests.ps1  # Unit tests for batch orchestration
+│   └── whisper-asr-service-docker.Tests.ps1 # Unit tests for engine, config & timecodes
+├── docs/
+│   ├── ARCHITECTURE.md          # End-to-end technical architecture & diagrams
+│   ├── WORKFLOW_GUIDE.md        # Operations, troubleshooting & developer runbook
+│   └── adr/                     # Architecture Decision Records (0001–0007)
+├── CHANGELOG.md                 # Release history and changelog
+├── AGENTS.md                    # Operating guidelines for AI coding agents
+├── GEMINI.md                    # Project rules & manual Git policies
 ├── PSScriptAnalyzerSettings.psd1 # Linter rule definitions
-└── README.md                     # Project documentation
+└── README.md                    # Project overview & documentation
 ```
 
 ---
 
 ## 🏷️ Filename Naming Convention
 
-Name your audio files using the pattern:
+Name your audio/video files using the standard pattern:
 ```text
 [title].[LANG]-[PROFILE][SPEAKERS].[ext]
 ```
 
-### Components:
-* **`LANG`** (2 characters, optional): `CS` (Czech), `SK` (Slovak), `EN` (English), or omitted for Whisper auto-detection.
-* **`PROFILE`** (1 character, optional):
-  * `P` $\rightarrow$ `phone` profile (2 speakers default)
-  * `M` $\rightarrow$ `meeting` profile (variable room acoustics)
-  * `D` $\rightarrow$ `distant` profile (noisy/far-field audio)
-* **`SPEAKERS`** (integer, optional): Number of distinct diarized speakers.
+### Pattern Components:
+* **`LANG`** (2 letters, optional): `CS` (Czech), `SK` (Slovak), `EN` (English), or omitted for Whisper auto-detection.
+* **`PROFILE`** (1 letter, optional):
+  * `P` $\rightarrow$ `phone` profile (narrowband speech optimization)
+  * `M` $\rightarrow$ `meeting` profile (dynamic acoustic normalization)
+  * `D` $\rightarrow$ `distant` profile (compression & noise suppression)
+* **`SPEAKERS`** (integer, optional): Number of distinct diarized speakers (sets `min_speakers` and `max_speakers`).
 
 ### Examples:
 * `2026-04-14_O2-Rozhovor.CS-P2.m4a` $\rightarrow$ Czech, Phone profile, 2 speakers.
@@ -76,34 +88,36 @@ Name your audio files using the pattern:
 ## 🚀 Quick Start
 
 ### 1. Prerequisites
-Ensure the following tools are installed and available on your system:
-* **PowerShell 7.x+**
-* **FFmpeg** (added to system PATH)
-* **Docker Desktop** (running `whisper-asr-service` on port 9000)
+Ensure the following tools are installed:
+* **PowerShell 7.x+** (`pwsh`)
+* **FFmpeg** (accessible in system PATH)
+* **Docker Desktop** (WhisperX container running on port 9000)
 * **Ollama** (optional, for `SUMMARY.md` on port 11434)
 * **LM Studio** (optional, for `NOTES.md` on port 1234)
 
 ### 2. Configuration
-Copy the configuration template if you need local hardware overrides:
+To override settings for your local machine (e.g. container name or endpoints):
 ```powershell
 Copy-Item config\config.local.json.example config\config.local.json
 ```
 
 ### 3. Run Batch Transcription
-Process all audio files in a folder:
 ```powershell
-# Run from repository root
-pwsh -File .\src\_MASTER_WHISPER.ps1 -InputFolder "C:\Recordings\Meetings"
+# Standard batch processing (ASR + LLMs)
+pwsh -File .\src\_MASTER_WHISPER.ps1 -InputFolder "D:\Recordings\Meetings"
+
+# Fast batch processing (ASR only, skip LLMs)
+pwsh -File .\src\_MASTER_WHISPER.ps1 -InputFolder "D:\Recordings\Meetings" -DisableLLMs
 ```
 
 ### 4. Run Single File Transcription
 ```powershell
 pwsh -File .\src\whisper-asr-service-docker.ps1 `
-    -FilePath "C:\Recordings\interview.m4a" `
-    -Profile phone `
+    -FilePath "D:\Recordings\meeting.m4a" `
+    -Profile meeting `
     -Language sk `
-    -MinSpeakers 2 `
-    -MaxSpeakers 2 `
+    -MinSpeakers 3 `
+    -MaxSpeakers 5 `
     -GenerateMode both
 ```
 
@@ -111,35 +125,14 @@ pwsh -File .\src\whisper-asr-service-docker.ps1 `
 
 ## 🧪 Testing & Quality Assurance
 
-Run Pester unit tests locally:
+Run Pester unit tests:
 ```powershell
 Invoke-Pester -Path ./tests -Output Detailed
 ```
 
-Run PowerShell static code analysis (PSScriptAnalyzer):
-```powershell
-Invoke-ScriptAnalyzer -Path ./src -Recurse -Settings ./PSScriptAnalyzerSettings.psd1
-```
-
 ---
 
-## 🔄 GitHub Development Workflow
+## 🔒 Git & Contribution Policy
 
-1. **Working on Features**:
-   Create a feature branch instead of modifying main directly:
-   ```powershell
-   git checkout -b feature/my-enhancement
-   ```
-2. **Committing Changes**:
-   Use [GitHub Desktop](https://desktop.github.com/) or the Git CLI:
-   ```powershell
-   git add .
-   git commit -m "feat: description of change"
-   git push origin feature/my-enhancement
-   ```
-3. **Releases**:
-   Push a semantic version tag to trigger the automated GitHub Release workflow:
-   ```powershell
-   git tag -a v5.7.0 -m "Release v5.7.0"
-   git push origin v5.7.0
-   ```
+> [!IMPORTANT]
+> All commits, merges, and pushes are performed manually by the human developer via **GitHub Desktop**. AI agents are strictly forbidden from running automated `git commit` or `git push` commands.
