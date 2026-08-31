@@ -223,6 +223,14 @@ v06.00
 - Multi-Channel Audio Downmix (-ac 1): Enforced mono 16kHz across all DSP profiles (supporting 5.1/7.1 HE-AAC).
 - Empty/Corrupt Audio Detection: Validates preprocessed audio > 1KB before upload to prevent Docker API crashes.
 - High-Performance Hardware Telemetry: Replaced Get-WmiObject with Get-CimInstance to eliminate 57s remoting freeze in PS7.
+
+v06.01
+- Reverberant Room & Echo Audio Optimization: Added 'hallway' (H) and 'echoed' (E) DSP profiles with High-Pass (220Hz), Low-Pass (3700Hz), Spectral Denoise (afftdn), Notch EQ (380Hz), and EBU R128 Loudness Normalization.
+- Tuned ASR Decoding: Configured beam_size=1 (greedy search), condition_on_previous_text=false, and repetition_penalty=1.2 to eliminate hallucination loops on muffled CCTV microphone recordings.
+- Language-Aware Model Guard: Safeguards language-specific fine-tuned models (e.g. kinit-sk) to be used exclusively for Slovak ('sk'), automatically falling back to standard multilingual 'large-v3' for Czech and English.
+- Acoustic Reconstruction LLM Prompting: Added specialized contextual acoustic guidelines into LM Studio (.NOTES.md) and Ollama (.SUMMARY.md) prompt templates to reconstruct distorted phonemes into coherent domain dialogue.
+- Dynamic Log Parameters: New-TranscriptionLog dynamically records exact ffmpeg_filters, audio_format, model, and VAD parameters without static hardcoding.
+- Multi-format Deduplication: Enhanced Clean-TranscriptText to eliminate consecutive stuttering line loops across TXT, SRT, VTT, and TSV outputs.
 #>
 
 
@@ -232,7 +240,7 @@ param(
     [string]$FilePath,
 
     [Parameter(Mandatory=$false)]
-    [ValidateSet("meeting", "phone", "distant")]
+    [ValidateSet("meeting", "phone", "distant", "hallway", "echoed")]
     [string]$Profile,  # Will be extracted from filename or defaulted
 
     [Parameter(Mandatory=$false)]
@@ -509,6 +517,22 @@ function Save-Utf8($path, $content) {
     [System.IO.File]::WriteAllText($path, $content, $Utf8NoBom)
 }
 
+# Cleans token-level repetitions and silent artifact loops
+function Clean-TranscriptText([string]$Text) {
+    if ([string]::IsNullOrWhiteSpace($Text)) { return "" }
+    # 1. Reject lines containing only punctuation or dots (e.g. ".", "...", "---")
+    if ($Text -match '^[\s\.\,\;\:\-\—_]+$') {
+        return ""
+    }
+    # 2. Deduplicate word-level repetitions: e.g. "pozor, pozor, pozor, pozor" -> "pozor"
+    $cleaned = [regex]::Replace($Text, '(?i)(\b[\wáčďéíĺľňóôŕšťúýžÁČĎÉÍĹĽŇÓÔŔŠŤÚÝŽ0-9]+\b)(?:[,\s]+\1){2,}', '$1')
+    # 3. Deduplicate repeated punctuation / dots inside text
+    if ($cleaned -match '^\s*(\.{3}\s*)+$') {
+        return ""
+    }
+    return $cleaned.Trim()
+}
+
 # --- 2a. System Information Function ---
 
 # Collects comprehensive computer system information for logging
@@ -681,6 +705,8 @@ if ($ExtractedParams.ProfileChar) {
         "P" { $Profile = "phone" }
         "M" { $Profile = "meeting" }
         "D" { $Profile = "distant" }
+        "H" { $Profile = "hallway" }
+        "E" { $Profile = "echoed" }
         default { $Profile = "phone" }  # Default fallback
     }
 }
@@ -717,6 +743,7 @@ function New-TranscriptionLog {
         [string]$Profile,
         [object]$Config,
         [string]$Language,
+        [string]$ModelName,
         [string]$FullUrl,
         [string]$QueryString,
         [string]$ProcessedFile,
@@ -754,13 +781,16 @@ function New-TranscriptionLog {
             vad_offset = $Config.vad_offset
             min_speakers = $Config.min_speakers
             max_speakers = $Config.max_speakers
-            initial_prompt = $Config.initial_prompt.Replace("`r`n", " ")
+            initial_prompt = if ($Config.initial_prompt) { $Config.initial_prompt.Replace("`r`n", " ") } else { "" }
             temperature = $Config.temperature
+            ffmpeg_filters = $Config.ffmpeg_filters
+            audio_format = $Config.audio_format
+            use_neural_enhancer = $Config.use_neural_enhancer
         }
         
         api_parameters = @{
             language = $Language
-            model = "large-v3"
+            model = $ModelName
         }
         
         query_string = $QueryString
@@ -858,42 +888,52 @@ function Write-CompletionSummary {
     Write-Host "Log file saved: $LogPath" -ForegroundColor Cyan
 }
 
-# --- 3. Profile Configurations ---
-$ProfileSettings = @{
-    "meeting" = @{
-        "diarize"        = "true"
-        "vad_filter"     = "true"
-        "vad_onset"      = "0.1"
-        "vad_offset"     = "0.2"
-        "initial_prompt" = "Toto je nahrávka z meetingu."
-        "min_speakers"   = $MinSpeakers -replace "^$", "2"
-        "max_speakers"   = $MaxSpeakers -replace "^$", "5"
-        "temperature"    = "0.0"
+# --- 3. Dynamic Profile Configurations from AppConfig ---
+$Config = if ($AppConfig.profiles -and $AppConfig.profiles.$Profile) {
+    $pCfg = $AppConfig.profiles.$Profile
+    [PSCustomObject]@{
+        "diarize"                    = if ($null -ne $pCfg.diarize) { "$($pCfg.diarize)" } else { "true" }
+        "vad_filter"                 = if ($null -ne $pCfg.vad_filter) { "$($pCfg.vad_filter)" } else { "true" }
+        "vad_onset"                  = if ($null -ne $pCfg.vad_onset) { "$($pCfg.vad_onset)" } else { "0.5" }
+        "vad_offset"                 = if ($null -ne $pCfg.vad_offset) { "$($pCfg.vad_offset)" } else { "0.363" }
+        "initial_prompt"             = if ($null -ne $pCfg.initial_prompt) { "$($pCfg.initial_prompt)" } else { "" }
+        "min_speakers"               = if ($MinSpeakers) { "$MinSpeakers" } elseif ($null -ne $pCfg.min_speakers) { "$($pCfg.min_speakers)" } else { "2" }
+        "max_speakers"               = if ($MaxSpeakers) { "$MaxSpeakers" } elseif ($null -ne $pCfg.max_speakers) { "$($pCfg.max_speakers)" } else { "2" }
+        "temperature"                = if ($null -ne $pCfg.temperature) { "$($pCfg.temperature)" } else { "0.0" }
+        "beam_size"                  = if ($null -ne $pCfg.beam_size) { "$($pCfg.beam_size)" } else { $null }
+        "condition_on_previous_text" = if ($null -ne $pCfg.condition_on_previous_text) { "$($pCfg.condition_on_previous_text)" } else { $null }
+        "repetition_penalty"         = if ($null -ne $pCfg.repetition_penalty) { "$($pCfg.repetition_penalty)" } else { $null }
+        "no_repeat_ngram_size"       = if ($null -ne $pCfg.no_repeat_ngram_size) { "$($pCfg.no_repeat_ngram_size)" } else { $null }
+        "ffmpeg_filters"             = if ($null -ne $pCfg.ffmpeg_filters) { "$($pCfg.ffmpeg_filters)" } else { "highpass=f=200,lowpass=f=3500,speechnorm=e=4:r=0.0001:l=1,loudnorm=I=-16:TP=-1.5:LRA=11" }
+        "audio_format"               = if ($null -ne $pCfg.audio_format) { "$($pCfg.audio_format)" } else { "mp3" }
+        "suffix"                     = if ($null -ne $pCfg.suffix) { "$($pCfg.suffix)" } else { "${Profile}-processed" }
+        "model"                      = if ($null -ne $pCfg.model) { "$($pCfg.model)" } else { $null }
+        "use_neural_enhancer"        = if ($null -ne $pCfg.use_neural_enhancer) { [bool]$pCfg.use_neural_enhancer } else { $false }
+        "use_wpe_dereverb"           = if ($null -ne $pCfg.use_wpe_dereverb) { [bool]$pCfg.use_wpe_dereverb } else { $false }
     }
-    "phone" = @{
-        "diarize"        = "true"
-        "vad_filter"     = "true"   # WhisperX's diarization engine (Pyannote) heavily relies on the VAD (Voice Activity Detection) map to know where segments begin and end. If you turn the VAD filter OFF, you are sending a raw "blob" of audio to the diarization model.
-        "vad_onset"      = "0.5"    # Less sensitive. The diarization engine (Pyannote) needs a solid "chunk" of audio (usually 0.5s or more) to identify a voice. If the segments are too short, it fails to identify who is speaking.
-        "vad_offset"     = "0.5"    # Less sensitive        
-        "initial_prompt" = "Přepis nahrávky telefonického hovoru. Hlasy mohou být zkreslené."
-        "min_speakers"   = $MinSpeakers -replace "^$", "2"
-        "max_speakers"   = $MaxSpeakers -replace "^$", "2"      # Hard limit to 2 people   
-        "temperature"    = "0.0"
-    }
-    "distant" = @{
-        "diarize"        = "true"
-        "vad_filter"     = "true"
-        "vad_onset"      = "0.1"
-        "vad_offset"     = "0.2"
-        "initial_prompt" = "Nahrávka z dálky v místnosti."
-        "min_speakers"   = $MinSpeakers -replace "^$", "2"
-        "max_speakers"   = $MaxSpeakers -replace "^$", "5"
-        "temperature"    = "0.2"
+} else {
+    # Fallback default
+    [PSCustomObject]@{
+        "diarize"                    = "true"
+        "vad_filter"                 = "true"
+        "vad_onset"                  = "0.5"
+        "vad_offset"                 = "0.363"
+        "initial_prompt"             = ""
+        "min_speakers"               = if ($MinSpeakers) { "$MinSpeakers" } else { "2" }
+        "max_speakers"               = if ($MaxSpeakers) { "$MaxSpeakers" } else { "2" }
+        "temperature"                = "0.0"
+        "beam_size"                  = $null
+        "condition_on_previous_text" = $null
+        "repetition_penalty"         = $null
+        "no_repeat_ngram_size"       = $null
+        "ffmpeg_filters"             = "highpass=f=200,lowpass=f=3500,speechnorm=e=4:r=0.0001:l=1,loudnorm=I=-16:TP=-1.5:LRA=11"
+        "audio_format"               = "mp3"
+        "suffix"                     = "PHONE-NORM_HP-LW-SP-LN"
+        "model"                      = $null
+        "use_neural_enhancer"        = $false
+        "use_wpe_dereverb"           = $false
     }
 }
-
-
-
 
 Write-Host "`n ========================  File processing started  ========================" -ForegroundColor Green
 
@@ -901,45 +941,22 @@ Write-Host "`n ========================  File processing started  ==============
 $StartTime = Get-Date
 Write-Host "Transcription start time: $($StartTime.ToString("yyyy-MM-dd HH:mm:ss"))" -ForegroundColor Cyan
 
-$Config = $ProfileSettings[$Profile]
 $BaseName = [System.IO.Path]::GetFileNameWithoutExtension($FilePath)
 $OutputDir = [System.IO.Path]::GetDirectoryName($FilePath)
 $FullBase = Join-Path $OutputDir $BaseName
 
-# v03.04 - FFmpeg preprocessing integration: define processed file naming based on profile (switchable WAV/MP3)
-switch ($Profile) {
-    "phone"     { $ProcessedSuffix = "PHONE-NORM_HP-LW-SP-LN" }
-    "meeting"   { $ProcessedSuffix = "MEETING-NORM_HP-LW-DN" }
-    "distant"   { $ProcessedSuffix = "DISTANT-NORM_HP-LP-AC-SN" }
-    default     { $ProcessedSuffix = "${Profile}-processed" }
-}
+# Define processed file naming and audio format dynamically based on profile config
+$ProcessedSuffix = $Config.suffix
+$OutputFormat = $Config.audio_format
 
-
-
-
-# v03.04 - FFmpeg WAV encoding parameters (PCM 16-bit LE) - NCOMMENT TO USE WAV
-# $FfMpegWavParams = "-acodec pcm_s16le"
-
-# v03.04 - FFmpeg MP3 encoding parameters (libmp3lame, 64kbps) - UNCOMMENT TO USE MP3
-$FfMpegMp3Params = "-acodec libmp3lame -b:a 64k"
-
-
-# v03.04 - Determine output format based on active codec and set file path
-if ($FfMpegWavParams) {
-    $OutputFormat = "wav"
-    $FfMpegOutputParams = $FfMpegWavParams
+if ($OutputFormat -eq "wav") {
+    $FfMpegOutputParams = "-acodec pcm_s16le"
 } else {
-    $OutputFormat = "mp3"
-    $FfMpegOutputParams = $FfMpegMp3Params
+    $FfMpegOutputParams = "-acodec libmp3lame -b:a 64k"
 }
 $TempProcessedFile = "$OutputDir\$BaseName.$ProcessedSuffix.$OutputFormat"
 
-
-
-
-
-
-# v03.06 - Check if processed file already exists and is valid to skip redundant FFmpeg conversion
+# Check if processed file already exists and is valid to skip redundant FFmpeg conversion
 Write-Host "Checking for existing processed file: $TempProcessedFile" -ForegroundColor Gray
 
 $ProcessedFileValid = $false
@@ -958,28 +975,10 @@ if ($ProcessedFileValid) {
     Write-Host "Processed file already exists: $TempProcessedFile" -ForegroundColor Cyan
     Write-Host "Skipping FFmpeg preprocessing..." -ForegroundColor Yellow
 } else {
-    # v03.03 - FFmpeg preprocessing integration: profile-specific pipeline selection
-    # Preprocess audio file using FFmpeg before upload (profile-specific pipelines)
+    # Preprocess audio file using FFmpeg with profile filter chain from config
     Write-Host "Preprocessing audio file with FFmpeg ($Profile profile)..." -ForegroundColor Yellow
-
-    switch ($Profile) {
-    "phone" {
-        # v03.03 - Phone: Speech-focused, narrow bandwidth (200-3500Hz), speech normalization -> WAV PCM uncompressed or MP3 (libmp3lame, 64kbps)
-        $FfMpegCmd = "ffmpeg.exe -i `"$FilePath`" -af `"highpass=f=200, lowpass=f=3500, speechnorm=e=10:r=0.0005:l=1, loudnorm=I=-16:TP=-1.5:LRA=11`" $FfMpegOutputParams -ac 1 -ar 16000 `"$TempProcessedFile`" -y"
-    }
-    "meeting" {
-        # v03.03 - Meeting: Full speech range (80-8000Hz), dynamic normalization for variable room acoustics -> WAV PCM uncompressed or MP3 (libmp3lame, 64kbps)
-        $FfMpegCmd = "ffmpeg.exe -i `"$FilePath`" -af `"highpass=f=80, lowpass=f=8000, dynaudnorm=p=0.9:m=50:s=5:g=15, loudnorm=I=-16:TP=-1.5:LRA=11`" $FfMpegOutputParams -ac 1 -ar 16000 `"$TempProcessedFile`" -y"
-    }
-    "distant" {
-        # v03.03 - Distant: Narrower bandwidth (200-4000Hz), compressor + speech normalization for noisy environments -> WAV PCM uncompressed or MP3 (libmp3lame, 64kbps)
-        $FfMpegCmd = "ffmpeg.exe -i `"$FilePath`" -af `"highpass=f=200, lowpass=f=4000, acompressor=threshold=-20dB:ratio=10:attack=5:release=50:makeup=8, speechnorm=e=30:r=0.0001:l=1, loudnorm=I=-16:TP=-1.5:LRA=11`" $FfMpegOutputParams -ac 1 -ar 16000 `"$TempProcessedFile`" -y"
-    }
-    default {
-        # v03.03 - Default: Same as phone profile -> WAV PCM uncompressed or MP3 (libmp3lame, 64kbps)
-        $FfMpegCmd = "ffmpeg.exe -i `"$FilePath`" -af `"highpass=f=200, lowpass=f=3500, speechnorm=e=10:r=0.0005:l=1, loudnorm=I=-16:TP=-1.5:LRA=11`" $FfMpegOutputParams -ac 1 -ar 16000 `"$TempProcessedFile`" -y"
-        }
-    }
+    $ffmpegFilter = $Config.ffmpeg_filters
+    $FfMpegCmd = "ffmpeg.exe -i `"$FilePath`" -af `"$ffmpegFilter`" $FfMpegOutputParams -ac 1 -ar 16000 `"$TempProcessedFile`" -y"
 
     # Set FFREPORT environment variable for FFmpeg logging with timestamped filename
     # Use relative filename to avoid Windows drive letter colon parsing issues in FFmpeg
@@ -1025,12 +1024,108 @@ if ($ProcessedFileValid) {
     Write-Host "Success! Audio preprocessed successfully: $TempProcessedFile" -ForegroundColor Green
 }
 
+# --- Neural Audio Enhancement Stage (Resemble Enhance: Denoise + Super-Resolution to 44.1kHz) ---
+if ($AppConfig.profiles -and $AppConfig.profiles.$Profile -and $AppConfig.profiles.$Profile.use_neural_enhancer) {
+    $EffectiveScriptDir = if ($PSScriptRoot) { $PSScriptRoot } elseif ($MyInvocation.MyCommand.Path) { Split-Path -Parent $MyInvocation.MyCommand.Path } else { (Get-Location).Path }
+    $EnhanceScript = Join-Path $EffectiveScriptDir "enhance_audio.py"
+    if (-not (Test-Path $EnhanceScript)) {
+        $EnhanceScript = Join-Path (Get-Location) "src\enhance_audio.py"
+    }
+    
+    $VenvPythonCandidates = @(
+        (Join-Path $EffectiveScriptDir "..\.venv\Scripts\python.exe"),
+        (Join-Path $EffectiveScriptDir ".venv\Scripts\python.exe"),
+        (Join-Path (Get-Location) ".venv\Scripts\python.exe"),
+        (Join-Path (Get-Location) "..\.venv\Scripts\python.exe")
+    )
+    $VenvPython = $null
+    foreach ($cand in $VenvPythonCandidates) {
+        if (Test-Path $cand) {
+            $VenvPython = $cand
+            break
+        }
+    }
+    
+    $EnhancedFile = "$OutputDir\$BaseName.$ProcessedSuffix.enhanced.wav"
+    if (Test-Path $EnhancedFile) {
+        $enhancedItem = Get-Item -LiteralPath $EnhancedFile -ErrorAction SilentlyContinue
+        if ($enhancedItem -and $enhancedItem.Length -gt 1024) {
+            $TempProcessedFile = $EnhancedFile
+            Write-Host "Using existing neural-enhanced audio: $TempProcessedFile" -ForegroundColor Cyan
+        }
+    } elseif ($VenvPython -and (Test-Path $EnhanceScript)) {
+        Write-Host "Applying Resemble Enhance neural restoration (Denoise + Super-Resolution)..." -ForegroundColor Magenta
+        $NfeVal = if ($AppConfig.resemble_enhance -and $AppConfig.resemble_enhance.nfe) { $AppConfig.resemble_enhance.nfe } else { 32 }
+        $SolverVal = if ($AppConfig.resemble_enhance -and $AppConfig.resemble_enhance.solver) { $AppConfig.resemble_enhance.solver } else { "midpoint" }
+        $TauVal = if ($AppConfig.resemble_enhance -and $AppConfig.resemble_enhance.tau) { $AppConfig.resemble_enhance.tau } else { 0.5 }
+        
+        & $VenvPython $EnhanceScript --input $TempProcessedFile --output $EnhancedFile --nfe $NfeVal --solver $SolverVal --tau $TauVal
+        
+        if ((Test-Path $EnhancedFile) -and ((Get-Item -LiteralPath $EnhancedFile).Length -gt 1024)) {
+            $TempProcessedFile = $EnhancedFile
+            Write-Host "Neural enhancement complete: $TempProcessedFile" -ForegroundColor Green
+        } else {
+            Write-Warning "Neural enhancement output was not created or empty. Proceeding with FFmpeg audio."
+        }
+    } else {
+        Write-Warning "Resemble Enhance python environment not found. Proceeding with FFmpeg audio."
+    }
+}
 
-<##>
-# TEMPOARY COMMENT OUT TO TEST API CALL WITHOUT FFmpeg PREPROCESSING (SENDING ORIGINAL FILE INSTEAD OF PROCESSED FILE)
+# --- Statistical WPE (Weighted Prediction Error) Dereverberation Stage ---
+if ($Config.use_wpe_dereverb) {
+    Write-Host "Applying WPE statistical dereverberation (nara_wpe)..." -ForegroundColor Magenta
+    $WpeOutputFile = "$OutputDir\$BaseName.$ProcessedSuffix.wpe.$OutputFormat"
+    if (Test-Path $WpeOutputFile) {
+        $wpeItem = Get-Item -LiteralPath $WpeOutputFile -ErrorAction SilentlyContinue
+        if ($wpeItem -and $wpeItem.Length -gt 1024) {
+            $TempProcessedFile = $WpeOutputFile
+            Write-Host "Using existing WPE dereverberated audio: $TempProcessedFile" -ForegroundColor Cyan
+        }
+    } else {
+        $EffectiveScriptDir = if ($PSScriptRoot) { $PSScriptRoot } elseif ($MyInvocation.MyCommand.Path) { Split-Path -Parent $MyInvocation.MyCommand.Path } else { (Get-Location).Path }
+        $WpeScript = Join-Path $EffectiveScriptDir "dereverb_wpe.py"
+        if (-not (Test-Path $WpeScript)) {
+            $WpeScript = Join-Path (Get-Location) "src\dereverb_wpe.py"
+        }
+        
+        $VenvPythonCandidates = @(
+            (Join-Path $EffectiveScriptDir "..\.venv\Scripts\python.exe"),
+            (Join-Path $EffectiveScriptDir ".venv\Scripts\python.exe"),
+            (Join-Path (Get-Location) ".venv\Scripts\python.exe"),
+            (Join-Path (Get-Location) "..\.venv\Scripts\python.exe")
+        )
+        $VenvPython = $null
+        foreach ($cand in $VenvPythonCandidates) {
+            if (Test-Path $cand) {
+                $VenvPython = $cand
+                break
+            }
+        }
+        
+        if ($VenvPython -and (Test-Path $WpeScript)) {
+            & $VenvPython $WpeScript --input $TempProcessedFile --output $WpeOutputFile
+        } else {
+            $containerName = if ($AppConfig.whisper_service -and $AppConfig.whisper_service.docker_container_name) { $AppConfig.whisper_service.docker_container_name } else { "whisperx-api" }
+            docker cp $WpeScript "${containerName}:/workspace/dereverb_wpe.py" 2>$null
+            docker cp $TempProcessedFile "${containerName}:/workspace/temp_in.audio" 2>$null
+            docker exec $containerName python3 /workspace/dereverb_wpe.py --input /workspace/temp_in.audio --output /workspace/temp_out.audio
+            docker cp "${containerName}:/workspace/temp_out.audio" $WpeOutputFile 2>$null
+            docker exec $containerName rm -f /workspace/temp_in.audio /workspace/temp_out.audio /workspace/dereverb_wpe.py 2>$null
+        }
+
+        if ((Test-Path $WpeOutputFile) -and ((Get-Item -LiteralPath $WpeOutputFile).Length -gt 1024)) {
+            $TempProcessedFile = $WpeOutputFile
+            Write-Host "WPE dereverberation complete: $TempProcessedFile" -ForegroundColor Green
+        } else {
+            Write-Warning "WPE output was not created or empty. Proceeding with standard audio."
+        }
+    }
+}
+
 
 # Check if JSON file already exists - skip to summarization if so
-    if (-not (Test-Path "$FullBase.json")) {
+if (-not (Test-Path "$FullBase.json")) {
 
 
     # Requesting verbose_json to get segment data for SRT/VTT/TSV with proper quoting of path
@@ -1077,7 +1172,25 @@ if ($ProcessedFileValid) {
     # v03.02 - updated call to native whisperx endpoint with proper language parameter (working with diarization and correct language processing)
     # Prepare the URL with all parameters as Query Strings (with proper URL encoding)
     $BaseUrl = if ($AppConfig -and $AppConfig.whisper_service -and $AppConfig.whisper_service.api_url) { $AppConfig.whisper_service.api_url } else { "http://localhost:9000/asr" }
-    $ModelName = if ($AppConfig -and $AppConfig.whisper_service -and $AppConfig.whisper_service.model) { $AppConfig.whisper_service.model } else { "large-v3" }
+    
+    $BaselineModel = if ($AppConfig.whisper_service -and $AppConfig.whisper_service.model) {
+        $AppConfig.whisper_service.model
+    } else {
+        "large-v3"
+    }
+
+    $ModelName = if ($AppConfig.profiles -and $AppConfig.profiles.$Profile -and $AppConfig.profiles.$Profile.model) {
+        $candidateModel = $AppConfig.profiles.$Profile.model
+        # Safety Guard: Slovak-specific models (e.g. kinit-sk) must strictly only be used for Slovak ('sk')
+        if ($candidateModel -match '(?i)(kinit|slovak|-sk)' -and $Language -ne "sk") {
+            Write-Host "Note: Profile model '$candidateModel' is Slovak-only. Using baseline '$BaselineModel' for language '$Language'..." -ForegroundColor Cyan
+            $BaselineModel
+        } else {
+            $candidateModel
+        }
+    } else {
+        $BaselineModel
+    }
     $DockerContainer = if ($AppConfig -and $AppConfig.whisper_service -and $AppConfig.whisper_service.docker_container_name) { 
         $AppConfig.whisper_service.docker_container_name 
     } else { 
@@ -1126,6 +1239,18 @@ if ($ProcessedFileValid) {
     if ($null -ne $Config.temperature -and "$($Config.temperature)" -ne "") {
         $QueryParamList.Add("temperature=$(ConvertTo-UrlEncoded $Config.temperature)")
     }
+    if ($null -ne $Config.beam_size -and "$($Config.beam_size)" -ne "") {
+        $QueryParamList.Add("beam_size=$(ConvertTo-UrlEncoded $Config.beam_size)")
+    }
+    if ($null -ne $Config.condition_on_previous_text -and "$($Config.condition_on_previous_text)" -ne "") {
+        $QueryParamList.Add("condition_on_previous_text=$(ConvertTo-UrlEncoded $Config.condition_on_previous_text)")
+    }
+    if ($null -ne $Config.repetition_penalty -and "$($Config.repetition_penalty)" -ne "") {
+        $QueryParamList.Add("repetition_penalty=$(ConvertTo-UrlEncoded $Config.repetition_penalty)")
+    }
+    if ($null -ne $Config.no_repeat_ngram_size -and "$($Config.no_repeat_ngram_size)" -ne "") {
+        $QueryParamList.Add("no_repeat_ngram_size=$(ConvertTo-UrlEncoded $Config.no_repeat_ngram_size)")
+    }
 
     $QueryString = $QueryParamList -join "&"
     $FullUrl = if ($QueryString) { "$BaseUrl`?$QueryString" } else { $BaseUrl }
@@ -1137,6 +1262,7 @@ if ($ProcessedFileValid) {
         -Profile $Profile `
         -Config $Config `
         -Language $Language `
+        -ModelName $ModelName `
         -FullUrl $FullUrl `
         -QueryString $QueryString `
         -ProcessedFile $TempProcessedFile `
@@ -1332,9 +1458,20 @@ Start-Sleep -Seconds 1
 Write-Progress -Activity "Generating TXT File with different speakers" -Status "Generating output files..." -PercentComplete 85
 
 $txt = ""
+$lastCleanedText = ""
+$lastSpeaker = ""
 foreach ($s in $Data.segments) {
-    $speakerPrefix = if ($s.speaker) { "[$($s.speaker)]: " } else { "" }
-    $txt += "$speakerPrefix$($s.text.Trim())`r`n"
+    $cleanedText = Clean-TranscriptText $s.text
+    if ($cleanedText) {
+        # Deduplicate consecutive identical short utterances (e.g. repeated "Môžeš." or "Dobre.")
+        if ($cleanedText -eq $lastCleanedText -and $s.speaker -eq $lastSpeaker) {
+            continue
+        }
+        $speakerPrefix = if ($s.speaker) { "[$($s.speaker)]: " } else { "" }
+        $txt += "$speakerPrefix$cleanedText`r`n"
+        $lastCleanedText = $cleanedText
+        $lastSpeaker = $s.speaker
+    }
 }
 Save-Utf8 "$FullBase.txt" $txt
 <##>
@@ -1345,12 +1482,24 @@ Start-Sleep -Seconds 1 # Small pause to ensure file is written before we read it
 Write-Progress -Activity "Generating SRT File with different speakers" -Status "Generating output files..." -PercentComplete 90
 
 $srt = ""
+$srtIndex = 1
+$lastCleanedText = ""
+$lastSpeaker = ""
 for ($i=0; $i -lt $Data.segments.Count; $i++) {
     $s = $Data.segments[$i]
-    $speakerPrefix = if ($s.speaker) { "[$($s.speaker)] " } else { "" }
-    $srt += "$($i+1)`r`n"
-    $srt += "$(Format-Time $s.start) --> $(Format-Time $s.end)`r`n"
-    $srt += "$speakerPrefix$($s.text.Trim())`r`n`r`n"
+    $cleanedText = Clean-TranscriptText $s.text
+    if ($cleanedText) {
+        if ($cleanedText -eq $lastCleanedText -and $s.speaker -eq $lastSpeaker) {
+            continue
+        }
+        $speakerPrefix = if ($s.speaker) { "[$($s.speaker)] " } else { "" }
+        $srt += "$srtIndex`r`n"
+        $srt += "$(Format-Time $s.start) --> $(Format-Time $s.end)`r`n"
+        $srt += "$speakerPrefix$cleanedText`r`n`r`n"
+        $srtIndex++
+        $lastCleanedText = $cleanedText
+        $lastSpeaker = $s.speaker
+    }
 }
 Save-Utf8 "$FullBase.srt" $srt
 
@@ -1361,10 +1510,20 @@ Start-Sleep -Seconds 1 # Small pause to ensure file is written before we read it
 Write-Progress -Activity "Generating VTT File with different speakers" -Status "Generating output files..." -PercentComplete 95
 
 $vtt = "WEBVTT`r`n`r`n"
+$lastCleanedText = ""
+$lastSpeaker = ""
 foreach ($s in $Data.segments) {
-    $speakerPrefix = if ($s.speaker) { "[$($s.speaker)] " } else { "" }
-    $vtt += "$(Format-Time $s.start '.') --> $(Format-Time $s.end '.')`r`n"
-    $vtt += "$speakerPrefix$($s.text.Trim())`r`n`r`n"
+    $cleanedText = Clean-TranscriptText $s.text
+    if ($cleanedText) {
+        if ($cleanedText -eq $lastCleanedText -and $s.speaker -eq $lastSpeaker) {
+            continue
+        }
+        $speakerPrefix = if ($s.speaker) { "[$($s.speaker)] " } else { "" }
+        $vtt += "$(Format-Time $s.start '.') --> $(Format-Time $s.end '.')`r`n"
+        $vtt += "$speakerPrefix$cleanedText`r`n`r`n"
+        $lastCleanedText = $cleanedText
+        $lastSpeaker = $s.speaker
+    }
 }
 Save-Utf8 "$FullBase.vtt" $vtt
 
@@ -1376,8 +1535,18 @@ Start-Sleep -Seconds 1 # Small pause to ensure file is written before we read it
 Write-Progress -Activity "Generating TSV File with different speakers" -Status "Generating output files..." -PercentComplete 98
 
 $tsv = "start`tend`tspeaker`ttext`r`n"
+$lastCleanedText = ""
+$lastSpeaker = ""
 foreach ($s in $Data.segments) {
-    $tsv += "$($s.start)`t$($s.end)`t$($s.speaker)`t$($s.text.Trim())`r`n"
+    $cleanedText = Clean-TranscriptText $s.text
+    if ($cleanedText) {
+        if ($cleanedText -eq $lastCleanedText -and $s.speaker -eq $lastSpeaker) {
+            continue
+        }
+        $tsv += "$($s.start)`t$($s.end)`t$($s.speaker)`t$cleanedText`r`n"
+        $lastCleanedText = $cleanedText
+        $lastSpeaker = $s.speaker
+    }
 }
 Save-Utf8 "$FullBase.tsv" $tsv
 
@@ -1472,10 +1641,27 @@ if (Test-Path $TranscriptPath) {
     $TranscriptContent = ""
 }
 
-# Build the summary prompt for LM Studio
+# Build the summary prompt for LM Studio with acoustic reconstruction context for echoed/hallway environments
+$AcousticContextPrompt = if ($Profile -in @('hallway', 'echoed')) {
+@"
+ACOUSTIC CONTEXT & RECONSTRUCTION GUIDELINES:
+- This recording was captured in a reverberant acoustic space with echo and distance (hallway/corridor camera).
+- The raw transcript may contain phonetic misinterpretations, slurred syllables, or acoustic stuttering artifacts.
+- In your structured notes:
+  1. Reconstruct the plausible and coherent meaning of sentences by correcting obvious phonetic transcription errors and grammatical agreements in the target language (Slovak / Czech / English).
+  2. Filter out repeating filler loops or acoustic stutter fragments.
+  3. Extract the underlying genuine conversation, intent, action items, and speaker exchanges clearly.
+  4. Do not hallucinate unrelated facts; keep reconstructions strictly faithful to the conversational context.
+
+"@
+} else {
+    ""
+}
+
 $SummaryPromptRemote = @"
 Please create a detailed structured notes of this audio transcript in the original language of the transcript file. 
 
+$AcousticContextPrompt
 Rules:
 1. Include speaker names if possible (or speaker labels if not possible to deduce names)
 2. Speaker names can be derived from topic or transcript (if name mentioned) 
@@ -1583,6 +1769,7 @@ if (Test-Path $TranscriptPath) {
 $SummaryPrompt = @"
 Please create a structured summary of this audio transcript in the original language of the transcript file. 
 
+$AcousticContextPrompt
 Rules:
 1. Include speaker names if possible (or speaker labels if not possible to deduce names)
 2. Speaker names can be derived from topic or transcript (if name mentioned) 

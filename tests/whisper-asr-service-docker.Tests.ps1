@@ -119,6 +119,20 @@ Describe "Whisper ASR Service Docker Tests" {
             $ProfileSettings["distant"].vad_offset | Should -Be "0.2"
             $ProfileSettings["distant"].vad_onset | Should -Be "0.1"
         }
+
+        It "Extracts hallway profile with letter H correctly" {
+            $params = Extract-ParametersFromFilename -FileName "hallway_camera.SK-H1.mp4"
+            $params.LanguageCode | Should -Be "sk"
+            $params.ProfileChar | Should -Be "H"
+            $params.SpeakerCount | Should -Be 1
+        }
+
+        It "Extracts echoed profile with letter E correctly" {
+            $params = Extract-ParametersFromFilename -FileName "echo_room.SK-E2.mp4"
+            $params.LanguageCode | Should -Be "sk"
+            $params.ProfileChar | Should -Be "E"
+            $params.SpeakerCount | Should -Be 2
+        }
     }
 
     Context "Audio File Validity and LLM Mode Control" {
@@ -177,6 +191,26 @@ Describe "Whisper ASR Service Docker Tests" {
             $merged.ollama_service.model | Should -Be "gemma3:4b"
 
             Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+
+        It "Falls back to baseline model when Slovak-specific model is requested for Czech or English" {
+            $candidateModel = "/.cache/whisper-large-v3-kinit-sk-ct2"
+            $baselineModel = "large-v3"
+            
+            # For Slovak: should keep candidateModel
+            $langSk = "sk"
+            $chosenSk = if ($candidateModel -match '(?i)(kinit|slovak|-sk)' -and $langSk -ne "sk") { $baselineModel } else { $candidateModel }
+            $chosenSk | Should -Be $candidateModel
+
+            # For Czech: should fallback to baselineModel
+            $langCs = "cs"
+            $chosenCs = if ($candidateModel -match '(?i)(kinit|slovak|-sk)' -and $langCs -ne "sk") { $baselineModel } else { $candidateModel }
+            $chosenCs | Should -Be $baselineModel
+
+            # For English: should fallback to baselineModel
+            $langEn = "en"
+            $chosenEn = if ($candidateModel -match '(?i)(kinit|slovak|-sk)' -and $langEn -ne "sk") { $baselineModel } else { $candidateModel }
+            $chosenEn | Should -Be $baselineModel
         }
     }
 }

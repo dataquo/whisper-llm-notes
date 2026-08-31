@@ -31,11 +31,11 @@ WHISPER/
 ├── docs/
 │   ├── ARCHITECTURE.md          # End-to-end technical architecture & diagrams
 │   ├── WORKFLOW_GUIDE.md        # Operations & troubleshooting guide
-│   └── adr/                     # Architectural Decision Records (0001-0007)
+│   └── adr/                     # Architectural Decision Records (0001-0008)
 ├── .github/workflows/
 │   ├── ci.yml                   # PSScriptAnalyzer + Pester 5/6 CI pipeline
 │   └── release.yml              # Automated release packaging on tag push
-├── CHANGELOG.md                 # Full release history from v01.00 to v06.00
+├── CHANGELOG.md                 # Full release history from v01.00 to v06.01
 ├── GEMINI.md                    # Active rules (NO automatic git commits/pushes)
 └── README.md                    # Project overview & quickstart
 ```
@@ -61,20 +61,21 @@ WHISPER/
     2. Extracting parameters from filename conventions (`.LL-X#`).
     3. Checking which transcript/summary files (`.json`, `.txt`, `.srt`, `.tsv`, `.vtt`, `.NOTES.md`, `.SUMMARY.md`) are missing or empty.
     4. Passing parameters and delegating execution to `whisper-asr-service-docker.ps1`.
-  * **Rule**: NEVER add Docker commands, container health checks, FFmpeg execution, or configuration loading into `_MASTER_WHISPER.ps1`. Keep it clean and lightweight (~200 lines).
+  * Supports selective generation flags: `-OnlyOllama`, `-OnlyLMStudio`, `-DisableLLM`.
+  * **Rule**: NEVER add Docker commands, container health checks, FFmpeg execution, or configuration loading into `_MASTER_WHISPER.ps1`. Keep it clean and lightweight (~220 lines).
 * **`src/whisper-asr-service-docker.ps1` (Self-Contained Execution Engine)**:
   * Responsible for all single-file processing:
     1. Loading and layering configuration (`Get-PipelineConfig`).
     2. Managing container health and startup (`Ensure-WhisperContainerRunning`).
-    3. Running FFmpeg audio preprocessing with mono downmixing (`-ac 1`).
-    4. Calling WhisperX API and generating secondary formats in RAM.
+    3. Running FFmpeg audio preprocessing with mono downmixing (`-ac 1`) and notch EQ.
+    4. Calling WhisperX API and generating secondary formats in RAM with deduplication.
     5. Flushing GPU VRAM via container restart (`Restart-WhisperContainer`).
-    6. Calling LLM summarization services (Ollama & LM Studio).
+    6. Calling LLM summarization services (Ollama & LM Studio) with context-aware reconstruction prompts.
 * **Single Source of Truth**:
   * All production PowerShell scripts live exclusively inside `src/`.
   * **Rule**: NEVER create duplicate copies or mirror scripts in the repository root (`WHISPER/`).
 
-### B. Deep Configuration Layering (`Get-PipelineConfig`)
+### B. Deep Configuration Layering & Dynamic Resolution
 * **No Guessing / No Hardcoded Heuristics**: Never write ad-hoc guessing loops or heuristic fallbacks for container names, ports, or model endpoints.
 * **`config/config.default.json` (Tracked in Git)**:
   * Contains official repository defaults: baseline models (`large-v3`, `gemma3:4b`), audio profile filter chains, default timeouts, and standard container name (`whisper-asr-service`).
@@ -83,6 +84,12 @@ WHISPER/
 * **Deep Merging Requirement**:
   * `Get-PipelineConfig` loads `config.default.json` and recursively overlays `config.local.json`.
   * **Rule**: When reading or editing config logic, always ensure deep property merging is maintained so that partial local overrides do not wipe out baseline filter chains, timeouts, or model settings.
+* **Dynamic Profile & Logging Binding**:
+  * The engine and logger (`New-TranscriptionLog`) resolve all profile properties dynamically from `$AppConfig.profiles.$Profile` rather than using static hardcoded switch blocks.
+
+### C. Language Guards & ASR Decoding Guidelines
+* **Language-Specific Model Guard**: Fine-tuned models targeting a single language (such as `whisper-large-v3-kinit-sk-ct2` for Slovak) must NEVER be applied to other languages (`cs`, `en`, etc.). The engine automatically intercepts non-matching languages and redirects them to multilingual `large-v3`.
+* **Reverberation & CCTV Decoding Constraints**: On muffled or reverberant audio, standard beam search can generate severe hallucination loops. Always utilize greedy search (`beam_size=1`), `condition_on_previous_text=false`, and `repetition_penalty=1.2` (as configured in the `echoed` profile).
 
 ---
 
@@ -120,6 +127,6 @@ Invoke-ScriptAnalyzer -Path ./src -Recurse -Settings ./PSScriptAnalyzerSettings.
 ## 7. How to Add New Audio Profiles
 
 1. Add profile settings to [config/config.default.json](file:///d:/_DOCUMENTS/_SCRIPTS/WHISPER/config/config.default.json) under `"profiles"`.
-2. Update the FFmpeg filter chain in [src/whisper-asr-service-docker.ps1](file:///d:/_DOCUMENTS/_SCRIPTS/WHISPER/src/whisper-asr-service-docker.ps1).
-3. Add a corresponding test case in [tests/whisper-asr-service-docker.Tests.ps1](file:///d:/_DOCUMENTS/_SCRIPTS/WHISPER/tests/whisper-asr-service-docker.Tests.ps1).
+2. Update the filename parameter extractor in [src/_MASTER_WHISPER.ps1](file:///d:/_DOCUMENTS/_SCRIPTS/WHISPER/src/_MASTER_WHISPER.ps1) and [src/whisper-asr-service-docker.ps1](file:///d:/_DOCUMENTS/_SCRIPTS/WHISPER/src/whisper-asr-service-docker.ps1).
+3. Add corresponding test cases in [tests/_MASTER_WHISPER.Tests.ps1](file:///d:/_DOCUMENTS/_SCRIPTS/WHISPER/tests/_MASTER_WHISPER.Tests.ps1) and [tests/whisper-asr-service-docker.Tests.ps1](file:///d:/_DOCUMENTS/_SCRIPTS/WHISPER/tests/whisper-asr-service-docker.Tests.ps1).
 4. Update documentation in [docs/ARCHITECTURE.md](file:///d:/_DOCUMENTS/_SCRIPTS/WHISPER/docs/ARCHITECTURE.md).

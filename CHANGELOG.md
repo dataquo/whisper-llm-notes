@@ -8,6 +8,34 @@ All notable changes to the WHISPER project are documented in this file. The proj
 
 ---
 
+## [v06.01] - 2026-09-01
+### Added
+* **Architecture Decision Record 0008** (`docs/adr/0008-reverberant-hallway-profiles-and-acoustic-reconstruction.md`).
+* **Dedicated Reverberant Profiles (`hallway` & `echoed`)**:
+  * Added `hallway` (`.SK-H#` / `HALLWAY-NORM_HP-LP-DN-EQ`) with Slovak fine-tuned model (`whisper-large-v3-kinit-sk-ct2`).
+  * Added `echoed` (`.SK-E#` / `ECHOED-NORM_HP-LP-DN-EQ`) with OpenAI `large-v3`, greedy search (`beam_size=1`), and repetition penalty (`1.2`) for universal echo suppression.
+  * Specialized 5-stage FFmpeg filter chain: High-Pass (220 Hz), Low-Pass (3700 Hz), FFT Spectral Denoise (`afftdn` -14 dB), 380 Hz Resonant Notch Equalizer (`equalizer`), and EBU R128 Loudness Normalization (-16 LUFS).
+* **Tuned ASR Decoding Query Strings**:
+  * Configured `beam_size=1` (greedy search), `condition_on_previous_text=false`, `repetition_penalty=1.2`, and `no_repeat_ngram_size=3` to eliminate looping hallucinations on low-SNR recordings.
+* **Automatic Language Guard**:
+  * Enforces that language-specific fine-tuned models (e.g. `kinit-sk`) are dispatched strictly when `Language == 'sk'`.
+  * Automatically falls back to standard multilingual `large-v3` for Czech (`cs`) and English (`en`) recordings.
+* **Context-Aware LLM Post-Reconstruction**:
+  * Added specialized acoustic reconstruction prompt instructions into LM Studio (`.NOTES.md`) and Ollama (`.SUMMARY.md`) templates when transcribing reverberant profiles.
+* **Selective LLM Generation Switches**:
+  * Added `-OnlyOllama` (aliases: `-OnlyOlama`, `-OllamaOnly`) to generate exclusively `.SUMMARY.md` via Ollama.
+  * Added `-OnlyLMStudio` (aliases: `-LMStudioOnly`, `-OnlyLM`) to generate exclusively `.NOTES.md` via LM Studio.
+* **IP Camera Audio Optimization Guide**:
+  * Documented recommended CCTV hardware settings (switching from 8 kHz G.711u to 16 kHz AAC, activating hardware Environmental Noise Filtering, and reducing microphone input volume to 60–70%).
+
+### Fixed
+* **Dynamic Parameter Logging**: Refactored `New-TranscriptionLog` and profile resolution in `whisper-asr-service-docker.ps1` to pull 100% dynamically from `$AppConfig.profiles`, eliminating hardcoded switch overrides and recording exact `ffmpeg_filters`, `audio_format`, and `model` in `.log` files.
+* **Multi-Format Stutter Deduplication**: Enhanced `Clean-TranscriptText` to collapse consecutive duplicate phrase loops across `.txt`, `.srt`, `.vtt`, and `.tsv` outputs.
+* **PowerShell Parameter Alias Conflict**: Removed case-redundant alias collision on `-OnlyLMStudio` that caused `MetadataError` in PowerShell 7+.
+* **Expanded Test Suite**: Added Pester unit tests covering `echoed` (E) parameter parsing, language guard fallbacks, and `-OnlyOllama` / `-OnlyLMStudio` modes (29/29 passing).
+
+---
+
 ## [v06.00] - 2026-08-30
 ### Added
 * **Architecture Decision Record 0007** (`docs/adr/0007-unified-container-lifecycle-and-config-layering.md`).

@@ -1,6 +1,6 @@
 # WHISPER Technical Architecture & Design
 
-This document details the end-to-end technical architecture, data processing pipeline, profile definitions, and service integrations of the **WHISPER** project (v06.00).
+This document details the end-to-end technical architecture, data processing pipeline, profile definitions, and service integrations of the **WHISPER** project (v06.01).
 
 ---
 
@@ -24,7 +24,7 @@ flowchart TD
     end
 
     subgraph AudioPreprocessing["3. Preprocessing (FFmpeg)"]
-        G --> H["FFmpeg Audio Pipeline\n(-ac 1 Mono + Bandwidth Filter + Loudnorm)"]
+        G --> H["FFmpeg Audio Pipeline\n(-ac 1 Mono + Bandwidth Filter + Notch EQ + Loudnorm)"]
         H --> I["Temp Preprocessed Audio\n(.WAV / .MP3 16kHz, Length > 1KB)"]
     end
     
@@ -41,7 +41,7 @@ flowchart TD
         K --> P["TSV Data Table (.tsv)"]
     end
 
-    subgraph AISummarization["6. Dual AI Summaries (Optional)"]
+    subgraph AISummarization["6. Context-Aware AI Summaries (Optional)"]
         M --> Q["LM Studio API\n(http://10.0.0.162:1234/v1)"]
         Q --> R["Detailed Notes (.NOTES.md)"]
         M --> S["Ollama API\n(http://localhost:11434)"]
@@ -62,17 +62,18 @@ The codebase enforces strict separation of concerns between batch folder iterati
 
 ### A. `src/_MASTER_WHISPER.ps1` (Pure Batch Orchestrator)
 * **Folder Scanning**: Discovers original media files (`.m4a`, `.flac`, `.mp4`, `.mp3`) and excludes intermediate normalized files.
-* **Tag Parsing**: Extracts language, DSP profile, and speaker counts from filename suffixes (`file.LL-X#.ext`).
+* **Tag Parsing**: Extracts language, DSP profile, and speaker counts from filename suffixes (`file.LL-X#.ext`, supporting `P`, `M`, `D`, `H`, `E`).
 * **Missing Output Inspection**: Checks for existing `.json`, `.txt`, `.srt`, `.tsv`, `.vtt`, `.NOTES.md`, and `.SUMMARY.md` files.
-* **Targeted Dispatch**: Computes the exact `GenerateMode` (`both`, `notes`, `summary`, `none`) and passes parameters to the engine.
+* **Targeted Dispatch**: Computes the exact `GenerateMode` (`both`, `notes`, `summary`, `none`) and honors `-OnlyOllama`, `-OnlyLMStudio`, or `-DisableLLM` flags.
 
 ### B. `src/whisper-asr-service-docker.ps1` (Self-Contained Execution Engine)
 * **Configuration Layering**: Loads tracked `config.default.json` and deep-merges machine-specific `config.local.json`.
 * **Container Lifecycle**: Manages Docker start, readiness polling (`/docs` or `/health`), and restart on completion or GPU error.
-* **Audio DSP Normalization**: Preprocesses audio using FFmpeg with mono downmixing (`-ac 1`) and -16 LUFS loudness normalization.
-* **WhisperX ASR**: Streams preprocessed audio to the container API with exact query parameters.
-* **Multi-Format Export**: Generates 5 transcript formats in system RAM without redundant GPU passes.
-* **Dual-LLM Summarization**: Coordinates structured notes via LM Studio and executive summaries via Ollama.
+* **Audio DSP Normalization**: Preprocesses audio using FFmpeg with mono downmixing (`-ac 1`), notch EQ, and -16 LUFS loudness normalization.
+* **WhisperX ASR**: Streams preprocessed audio to the container API with exact query parameters (`beam_size`, `condition_on_previous_text`, `repetition_penalty`).
+* **Language-Aware Model Guard**: Restricts Slovak fine-tuned models (`kinit-sk`) to Slovak audio, falling back to multilingual `large-v3` for Czech and English.
+* **Multi-Format Export & Deduplication**: Generates 5 transcript formats in system RAM while collapsing repeating acoustic stutter loops.
+* **Context-Aware LLM Summarization**: Coordinates structured notes via LM Studio and executive summaries via Ollama with acoustic error correction prompts.
 * **Telemetry & Hardware Profiling**: Collects CPU, RAM, and GPU hardware metrics via native CIM queries.
 
 ---
@@ -81,11 +82,13 @@ The codebase enforces strict separation of concerns between batch folder iterati
 
 Each profile applies specialized DSP filter chains to optimize voice clarity before sending audio to WhisperX. All profiles enforce mono downmix (`-ac 1`) to ensure compatibility with multi-channel audio tracks (e.g. 5.1 or 7.1 HE-AAC):
 
-| Profile | Suffix Identifier | Bandwidth Filters | Normalization & Dynamics | Best For |
-| :--- | :--- | :--- | :--- | :--- |
-| **`phone`** | `PHONE-NORM_HP-LW-SP-LN` | Highpass: 200 Hz<br>Lowpass: 3500 Hz | `speechnorm=e=10:r=0.0005:l=1`<br>`loudnorm=I=-16:TP=-1.5:LRA=11` | Cell phone calls, landlines, low-bitrate recordings |
-| **`meeting`** | `MEETING-NORM_HP-LW-DN` | Highpass: 80 Hz<br>Lowpass: 8000 Hz | `dynaudnorm=p=0.9:m=50:s=5:g=15`<br>`loudnorm=I=-16:TP=-1.5:LRA=11` | Multi-person conference room meetings, webinars |
-| **`distant`** | `DISTANT-NORM_HP-LP-AC-SN` | Highpass: 200 Hz<br>Lowpass: 4000 Hz | `acompressor=threshold=-20dB:ratio=10`<br>`speechnorm=e=30:r=0.0001:l=1`<br>`loudnorm=I=-16:TP=-1.5:LRA=11` | Far-field microphones, noisy ambient environments |
+| Profile | Tag | Suffix Identifier | Bandwidth & DSP Filters | Best For | Model Dispatched |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **`phone`** | `P` | `PHONE-NORM_HP-LW-SP-LN` | Highpass: 200 Hz, Lowpass: 3500 Hz<br>`speechnorm=e=10:r=0.0005:l=1`<br>`loudnorm=I=-16:TP=-1.5:LRA=11` | Cell phone calls, landlines, low-bitrate recordings | `large-v3` |
+| **`meeting`** | `M` | `MEETING-NORM_HP-LW-DN` | Highpass: 80 Hz, Lowpass: 8000 Hz<br>`dynaudnorm=p=0.9:m=50:s=5:g=15`<br>`loudnorm=I=-16:TP=-1.5:LRA=11` | Multi-person conference room meetings, webinars | `large-v3` |
+| **`distant`** | `D` | `DISTANT-NORM_HP-LP-AC-SN` | Highpass: 200 Hz, Lowpass: 4000 Hz<br>`acompressor=threshold=-24dB:ratio=4`<br>`speechnorm=e=4:r=0.0001:l=1`<br>`loudnorm=I=-16:TP=-1.5:LRA=11` | Far-field microphones, noisy ambient environments | `large-v3` |
+| **`hallway`** | `H` | `HALLWAY-NORM_HP-LP-DN-EQ` | Highpass: 220 Hz, Lowpass: 3700 Hz<br>`afftdn=nr=14:nf=-32:tn=1`<br>`equalizer=f=380:width_type=q:w=1.2:g=-4`<br>`loudnorm=I=-16:TP=-1.5:LRA=11` | Slovak corridor / hallway CCTV camera audio | `kinit-sk` (SK) / `large-v3` (CS/EN) |
+| **`echoed`** | `E` | `ECHOED-NORM_HP-LP-DN-EQ` | Highpass: 220 Hz, Lowpass: 3700 Hz<br>`afftdn=nr=14:nf=-32:tn=1`<br>`equalizer=f=380:width_type=q:w=1.2:g=-4`<br>`loudnorm=I=-16:TP=-1.5:LRA=11` | Reverberant concrete rooms, universal multilingual echo | `large-v3` (Greedy Search, penalty=1.2) |
 
 ---
 
@@ -122,7 +125,35 @@ To maximize GPU efficiency, the WhisperX API is invoked once to retrieve full di
 
 ---
 
-## 6. Hardware Telemetry & Performance Metrics
+## 6. ASR Decoding Optimization, Language Guards & LLM Acoustic Reconstruction
+
+### A. Strict Decoding Configuration
+To eliminate hallucination loops on distorted or reverberant audio, the `echoed` profile configures:
+* **`beam_size = 1`**: Forces greedy search decoding, restricting the model to direct acoustic probabilities without hallucinating long speculative phrases.
+* **`condition_on_previous_text = false`**: Stops acoustic errors in early segments from propagating into subsequent timestamps.
+* **`repetition_penalty = 1.2` & `no_repeat_ngram_size = 3`**: Prevents repetitive looping on trailing reverberant echoes.
+
+### B. Automatic Language Guard
+In [src/whisper-asr-service-docker.ps1](file:///d:/_DOCUMENTS/_SCRIPTS/WHISPER/src/whisper-asr-service-docker.ps1), if a profile specifies a Slovak fine-tuned model (e.g. `kinit-sk`):
+* When `Language == 'sk'`, `whisper-large-v3-kinit-sk-ct2` is dispatched.
+* When `Language == 'cs'` or `Language == 'en'`, the engine automatically falls back to baseline `large-v3` to prevent cross-lingual corruption.
+
+### C. Context-Aware LLM Post-Reconstruction
+For reverberant profiles (`hallway`, `echoed`), the LLM prompt templates for LM Studio and Ollama dynamically include acoustic reconstruction rules:
+```markdown
+ACOUSTIC CONTEXT & RECONSTRUCTION GUIDELINES:
+- This recording was captured in a reverberant acoustic space with echo and distance (hallway/corridor camera).
+- The raw transcript may contain phonetic misinterpretations, slurred syllables, or acoustic stuttering artifacts.
+- In your structured notes/summary:
+  1. Reconstruct the plausible and coherent meaning of sentences by correcting obvious phonetic transcription errors and grammatical agreements in the target language (Slovak / Czech / English).
+  2. Filter out repeating filler loops or acoustic stutter fragments.
+  3. Extract the underlying genuine conversation, intent, action items, and speaker exchanges clearly.
+  4. Do not hallucinate unrelated facts; keep reconstructions strictly faithful to the conversational context.
+```
+
+---
+
+## 7. Hardware Telemetry & Performance Metrics
 
 On every transcription run, [src/whisper-asr-service-docker.ps1](file:///d:/_DOCUMENTS/_SCRIPTS/WHISPER/src/whisper-asr-service-docker.ps1) gathers system hardware metrics via native CIM queries (`Get-CimInstance`) and calculates processing throughput:
 

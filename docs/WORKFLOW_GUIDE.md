@@ -1,6 +1,6 @@
 # WHISPER Operational Runbook & Workflow Guide
 
-This guide provides practical instructions for daily operations, troubleshooting, testing, and developing within the **WHISPER** repository (v06.00).
+This guide provides practical instructions for daily operations, troubleshooting, testing, and developing within the **WHISPER** repository (v06.01).
 
 ---
 
@@ -16,29 +16,59 @@ pwsh -File .\src\_MASTER_WHISPER.ps1 -InputFolder "D:\Recordings\2026-August"
 * The script automatically skips any audio file whose transcripts (`.json`, `.txt`, `.srt`, `.tsv`, `.vtt`, `.NOTES.md`, `.SUMMARY.md`) already exist and are non-empty.
 * If only markdown notes are missing, it selectively runs LLM inference without re-running audio transcription.
 
-### Batch Transcription without LLMs (`-DisableLLMs`)
-To run pure WhisperX transcription (generating `.json`, `.txt`, `.srt`, `.tsv`, `.vtt`) and skip Ollama & LM Studio summarization:
-```powershell
-pwsh -File .\src\_MASTER_WHISPER.ps1 -InputFolder "D:\Recordings\2026-August" -DisableLLMs
-```
-*(Aliases: `-DisableLLMs`, `-DisableLLM`, `-SkipLLM`, `-NoLLM`)*
+### Selective LLM Execution Switches
+* **Only Ollama Summary (`.SUMMARY.md`)**:
+  ```powershell
+  pwsh -File .\src\_MASTER_WHISPER.ps1 -InputFolder "D:\Recordings" -OnlyOllama
+  ```
+  *(Aliases: `-OnlyOllama`, `-OnlyOlama`, `-OllamaOnly`)*
+
+* **Only LM Studio Notes (`.NOTES.md`)**:
+  ```powershell
+  pwsh -File .\src\_MASTER_WHISPER.ps1 -InputFolder "D:\Recordings" -OnlyLMStudio
+  ```
+  *(Aliases: `-OnlyLMStudio`, `-OnlyLMstudio`, `-LMStudioOnly`, `-OnlyLM`)*
+
+* **Pure WhisperX Transcription (No LLMs)**:
+  ```powershell
+  pwsh -File .\src\_MASTER_WHISPER.ps1 -InputFolder "D:\Recordings" -DisableLLM
+  ```
+  *(Aliases: `-DisableLLM`, `-DisableLLMs`, `-SkipLLM`, `-NoLLM`)*
 
 ### Single File Transcription
 To transcribe or re-process a specific audio file directly with the execution engine:
 ```powershell
 pwsh -File .\src\whisper-asr-service-docker.ps1 `
-    -FilePath "D:\Recordings\meeting.m4a" `
-    -Profile meeting `
+    -FilePath "D:\Recordings\corridor_camera.SK-E2.mp4" `
+    -Profile echoed `
     -Language sk `
-    -MinSpeakers 3 `
-    -MaxSpeakers 5 `
+    -MinSpeakers 2 `
+    -MaxSpeakers 2 `
     -GenerateMode both `
     -DebugMode
 ```
 
 ---
 
-## 2. Local Machine Configuration (`config.local.json`)
+## 2. IP Security Camera Audio Optimization (Hikvision / HiLook)
+
+When transcribing CCTV audio captured in reverberant spaces (concrete hallways, stairwells):
+
+### Recommended Camera Settings (Web UI / iVMS-4200):
+1. Navigate to: **Configuration $\to$ Video/Audio $\to$ Audio**.
+2. **Audio Encoding**: Change from `G.711ulaw` (8 kHz) to **`AAC`** (or `MP2L2`).
+3. **Sampling Rate**: Set to **`16 kHz`** (or 32/44.1 kHz if available).
+4. **Audio Stream Bitrate**: Set to **`64 kbps`** or **`128 kbps`**.
+5. **Environmental Noise Filtering**: Toggle to **`ON`** (activates hardware DSP filter on camera DSP chip).
+6. **Input Volume**: Reduce from 100% to **`60 – 70%`** (prevents microphone diaphragm clipping in reverberant corridors).
+
+### Impact on Whisper ASR Accuracy:
+* **8 kHz G.711u**: Max frequency ~3.7 kHz. Slovak sibilants (*s, š, c, č, z, ž, f, t*) are cut off, forcing the model to guess words.
+* **16 kHz AAC**: Preserves frequencies up to 8.0 kHz, providing full phonetic resolution for 95%+ transcription accuracy.
+
+---
+
+## 3. Local Machine Configuration (`config.local.json`)
 
 To customize settings for your individual developer environment without modifying tracked repository files:
 
@@ -61,7 +91,7 @@ To customize settings for your individual developer environment without modifyin
 
 ---
 
-## 3. Docker & Backend Services Management
+## 4. Docker & Backend Services Management
 
 ### Starting the WhisperX Service
 The execution engine automatically starts the container if stopped (`auto_restart_container: true`). To start it manually:
@@ -85,7 +115,7 @@ curl.exe -s http://10.0.0.162:1234/v1/models
 
 ---
 
-## 4. Local Development & Testing
+## 5. Local Development & Testing
 
 ### Running Pester Unit Tests
 To verify all regex parsers, formatters, configuration loaders, and lifecycle logic:
@@ -101,7 +131,7 @@ Invoke-ScriptAnalyzer -Path ./src -Recurse -Settings ./PSScriptAnalyzerSettings.
 
 ---
 
-## 5. Git & Release Workflow
+## 6. Git & Release Workflow
 
 ### Committing & Pushing
 > [!IMPORTANT]
@@ -114,12 +144,14 @@ Invoke-ScriptAnalyzer -Path ./src -Recurse -Settings ./PSScriptAnalyzerSettings.
 
 ---
 
-## 6. Troubleshooting Guide
+## 7. Troubleshooting Guide
 
 | Problem | Cause | Solution |
 | :--- | :--- | :--- |
 | `Cannot restart container: '...' not found` | Local container name differs from `config.default.json` | Set `"docker_container_name"` in `config/config.local.json`. |
+| `Model hallucinates parliamentary phrases` | Slovak fine-tuned model (`kinit-sk`) running on muffled echo audio | Switch filename tag from `.SK-H2` to `.SK-E2` (`echoed` profile uses neutral OpenAI `large-v3`). |
+| `Repeating word loops ("na päťkrát...")` | Low acoustic clarity causing beam search loop | Handled automatically in profile `echoed` (`beam_size=1`, `repetition_penalty=1.2`). |
 | `GPU Out of Memory (CUDA OOM)` | Ollama or other LLMs retaining GPU VRAM | Whisper engine automatically restarts the container. Or run `ollama stop <model>`. |
 | `Audio preprocessing yielded empty/invalid stream` | Video file has no audio stream or corrupt track | Input file contains no sound. Check FFmpeg log (`.log`) in target directory. |
+| `MetadataError: parameter alias conflict` | Case-insensitive alias collision in PowerShell | Resolved in v06.01; ensure all parameters use clean, distinct aliases. |
 | `PSScriptAnalyzer warnings` | Formatting or syntax violation | Run `Invoke-ScriptAnalyzer -Path ./src` and fix flagged lines. |
-| `FastAPI HTTP 422 Unprocessable Entity` | Empty/malformed query string | Handled automatically in v06.00; verify parameters in `config.default.json`. |

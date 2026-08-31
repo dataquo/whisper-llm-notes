@@ -7,26 +7,39 @@
     and invokes the whisper-asr-service-docker engine for missing items.
 .PARAMETER InputFolder
     Path to the directory containing audio recordings. Defaults to current directory.
+.PARAMETER ConfigPath
+    Optional explicit path to a custom configuration JSON file.
 .PARAMETER DisableLLM
     When specified (aliases: DisableLLMs, SkipLLM, NoLLM), skips all LLM summarization (Ollama and LM Studio).
+.PARAMETER OnlyOllama
+    When specified (aliases: OnlyOlama, OllamaOnly), generates ONLY Ollama summaries (.SUMMARY.md) and skips LM Studio notes.
+.PARAMETER OnlyLMStudio
+    When specified (aliases: LMStudioOnly, OnlyLM), generates ONLY LM Studio detailed notes (.NOTES.md) and skips Ollama summaries.
 .NOTES
-    Version: v06.00
-    - Refactored into pure batch orchestrator decoupled from container management.
-    - Added -DisableLLMs switch parameter.
-    - Single source of truth inside src/ directory.
+    Version: v06.01
+    - Added -OnlyOllama and -OnlyLMStudio switch parameters for selective LLM generation.
+    - Added support for new profiles: 'hallway' (H) and 'echoed' (E) with suffix 'ECHOED-NORM_HP-LP-DN-EQ'.
+    - Fully dynamic profile and suffix resolution from layered AppConfig.
+    - Fixed case-insensitive parameter alias conflict on PowerShell 7+.
 #>
 
 param(
     [string]$InputFolder = ".",
     [string]$ConfigPath = $null,
     [Alias("DisableLLMs", "SkipLLM", "NoLLM")]
-    [switch]$DisableLLM
+    [switch]$DisableLLM,
+    [Alias("OnlyOlama", "OllamaOnly")]
+    [switch]$OnlyOllama,
+    [Alias("LMStudioOnly", "OnlyLM")]
+    [switch]$OnlyLMStudio
 )
 
 # Helper function to determine which MD files need generation
 function Get-MissingMdFiles {
     param(
-        [string]$BasePath  # Full path without extension, e.g., "C:\folder\filename"
+        [string]$BasePath,  # Full path without extension, e.g., "C:\folder\filename"
+        [switch]$OnlyOllama,
+        [switch]$OnlyLMStudio
     )
     
     $notesPath = "$BasePath.NOTES.md"
@@ -34,6 +47,22 @@ function Get-MissingMdFiles {
     
     $notesMissing = -not (Test-Path $notesPath)
     $summaryMissing = -not (Test-Path $summaryPath)
+    
+    if ($OnlyOllama) {
+        $generateMode = if ($summaryMissing) { "summary" } else { "none" }
+        return @{
+            NotesMissing   = $false
+            SummaryMissing = $summaryMissing
+            GenerateMode   = $generateMode
+        }
+    } elseif ($OnlyLMStudio) {
+        $generateMode = if ($notesMissing) { "notes" } else { "none" }
+        return @{
+            NotesMissing   = $notesMissing
+            SummaryMissing = $false
+            GenerateMode   = $generateMode
+        }
+    }
     
     $generateMode = if ($notesMissing -and $summaryMissing) { 
         "both" 
@@ -58,9 +87,9 @@ function Parse-FileNameParameters {
     
     # Pattern: file_name.LL-X#.EXT where:
     # - LL = language code (2 letters, case-insensitive)
-    # - X = profile letter (P=phone, M=meeting, D=distant)
+    # - X = profile letter (P=phone, M=meeting, D=distant, H=hallway, E=echoed)
     # - # = speaker number
-    $Pattern = '^(.+)\.([A-Z]{2})-([PMD])(\d+)\.[^.]+$'
+    $Pattern = '^(.+)\.([A-Z]{2})-([PMDHE])(\d+)\.[^.]+$'
     
     if ($FileName -match $Pattern) {
         $LanguageCode = $matches[2].ToLower()  # Convert to lowercase: CS→cs, SK→sk, EN→en
@@ -72,6 +101,8 @@ function Parse-FileNameParameters {
             'P' { "phone" }
             'M' { "meeting" }
             'D' { "distant" }
+            'H' { "hallway" }
+            'E' { "echoed" }
             default { "phone" }
         }
         
@@ -111,7 +142,7 @@ $AudioFiles = @()
 
 # Check for original audio files (.m4a, .flac, .mp4, .mp3), excluding already-normalized intermediate files
 $OriginalAudioFiles = Get-ChildItem -Path $InputFolder -File -ErrorAction SilentlyContinue | Where-Object {
-    $_.Extension.ToLower() -in $AudioExtensions -and $_.Name -notmatch '\.(PHONE-NORM_|MEETING-NORM_|DISTANT-NORM_)'
+    $_.Extension.ToLower() -in $AudioExtensions -and $_.Name -notmatch '\.(PHONE-NORM_|MEETING-NORM_|DISTANT-NORM_|HALLWAY-NORM_|ECHOED-NORM_)'
 }
 
 if (-not $OriginalAudioFiles) {
@@ -120,7 +151,7 @@ if (-not $OriginalAudioFiles) {
 
 foreach ($File in $OriginalAudioFiles) {
     # Define processed file suffix patterns based on profile
-    $ProcessedSuffixes = @("PHONE-NORM_HP-LW-SP-LN", "MEETING-NORM_HP-LW-DN", "DISTANT-NORM_HP-LP-AC-SN")
+    $ProcessedSuffixes = @("PHONE-NORM_HP-LW-SP-LN", "MEETING-NORM_HP-LW-DN", "DISTANT-NORM_HP-LP-AC-SN", "HALLWAY-NORM_HP-LP-DN-EQ", "HALLWAY-NORM_HP-LP-GT-SN", "HALLWAY-NORM_HP-LP-DN", "ECHOED-NORM_HP-LP-DN-EQ", "ECHOED-NORM_WP-HP-LP-DN-EQ")
     
     # Check if this file needs processing (none of the processed transcript files exist)
     $NeedsProcessing = $true
@@ -147,7 +178,7 @@ foreach ($File in $OriginalAudioFiles) {
 
 # Also check for processed files that might exist without their transcripts
 $ProcessedFiles = Get-ChildItem -Path $InputFolder -File -ErrorAction SilentlyContinue | Where-Object {
-    $_.Name -match '\.PHONE-NORM_|\.MEETING-NORM_|\.DISTANT-NORM_'
+    $_.Name -match '\.PHONE-NORM_|\.MEETING-NORM_|\.DISTANT-NORM_|\.HALLWAY-NORM_'
 }
 
 if ($ProcessedFiles) {
@@ -158,6 +189,8 @@ if ($ProcessedFiles) {
         } elseif ($PFile.Name -match '^(.+)\.MEETING-NORM_[^\.]+$') {
             $Base = $matches[1]
         } elseif ($PFile.Name -match '^(.+)\.DISTANT-NORM_[^\.]+$') {
+            $Base = $matches[1]
+        } elseif ($PFile.Name -match '^(.+)\.HALLWAY-NORM_[^\.]+$') {
             $Base = $matches[1]
         } else {
             continue
@@ -178,7 +211,7 @@ if ($ProcessedFiles) {
         
         if (-not $HasTranscript) {
             # Find the original audio file that would create this processed file
-            $OriginalPath = $PFile.FullName -replace '\.PHONE-NORM_[^\.]+$' -replace '\.MEETING-NORM_[^\.]+$' -replace '\.DISTANT-NORM_[^\.]+$'
+            $OriginalPath = $PFile.FullName -replace '\.PHONE-NORM_[^\.]+$' -replace '\.MEETING-NORM_[^\.]+$' -replace '\.DISTANT-NORM_[^\.]+$' -replace '\.HALLWAY-NORM_[^\.]+$'
             if (Test-Path $OriginalPath) {
                 $AudioFiles += (Get-ChildItem $OriginalPath)
             }
@@ -241,7 +274,7 @@ foreach ($File in $AudioFiles) {
     }
     
     # Check which MD files are missing (NOTES.md and SUMMARY.md)
-    $MdCheck = Get-MissingMdFiles -BasePath "$($File.DirectoryName)\$($File.BaseName)"
+    $MdCheck = Get-MissingMdFiles -BasePath "$($File.DirectoryName)\$($File.BaseName)" -OnlyOllama:$OnlyOllama -OnlyLMStudio:$OnlyLMStudio
     
     # Determine if processing is needed
     $NeedsProcessing = if ($DisableLLM) {
@@ -274,6 +307,10 @@ foreach ($File in $AudioFiles) {
         # Determine what to process based on what's missing
         if ($DisableLLM) {
             $GenerateMode = "none"
+        } elseif ($OnlyOllama) {
+            $GenerateMode = "summary"
+        } elseif ($OnlyLMStudio) {
+            $GenerateMode = "notes"
         } elseif ($MdCheck.NotesMissing -and $MdCheck.SummaryMissing -and -not $AnyNonMdMissingOrEmpty) {
             # Only MD files missing, no non-MD files missing - generate only MD files
             $GenerateMode = $MdCheck.GenerateMode

@@ -45,6 +45,22 @@ Describe "Master Whisper Script Tests" {
             $result.MaxSpeakers | Should -Be 4
         }
 
+        It "Parses Slovak hallway recording with 2 speakers" {
+            $result = Parse-FileNameParameters -FileName "corridor_cam.SK-H2.mp4"
+            $result.Language | Should -Be "sk"
+            $result.Profile | Should -Be "hallway"
+            $result.MinSpeakers | Should -Be 2
+            $result.MaxSpeakers | Should -Be 2
+        }
+
+        It "Parses Slovak echoed recording with 2 speakers" {
+            $result = Parse-FileNameParameters -FileName "echo_hall.SK-E2.mp4"
+            $result.Language | Should -Be "sk"
+            $result.Profile | Should -Be "echoed"
+            $result.MinSpeakers | Should -Be 2
+            $result.MaxSpeakers | Should -Be 2
+        }
+
         It "Returns default phone profile and empty auto-detect language for untagged files" {
             $result = Parse-FileNameParameters -FileName "standard_voice_memo.m4a"
             $result.Language | Should -Be ""
@@ -98,6 +114,20 @@ Describe "Master Whisper Script Tests" {
             $check.SummaryMissing | Should -BeFalse
             $check.GenerateMode | Should -Be "none"
         }
+
+        It "Detects mode 'summary' when OnlyOllama is enabled regardless of NOTES.md" {
+            $check = Get-MissingMdFiles -BasePath $TestBase -OnlyOllama
+            $check.NotesMissing | Should -BeFalse
+            $check.SummaryMissing | Should -BeTrue
+            $check.GenerateMode | Should -Be "summary"
+        }
+
+        It "Detects mode 'notes' when OnlyLMStudio is enabled regardless of SUMMARY.md" {
+            $check = Get-MissingMdFiles -BasePath $TestBase -OnlyLMStudio
+            $check.NotesMissing | Should -BeTrue
+            $check.SummaryMissing | Should -BeFalse
+            $check.GenerateMode | Should -Be "notes"
+        }
     }
 
     Context "Intermediate Processed File Exclusion" {
@@ -106,11 +136,12 @@ Describe "Master Whisper Script Tests" {
                 [PSCustomObject]@{ Name = "recording.SK-D2.mp4"; Extension = ".mp4" },
                 [PSCustomObject]@{ Name = "recording.SK-D2.DISTANT-NORM_HP-LP-AC-SN.mp3"; Extension = ".mp3" },
                 [PSCustomObject]@{ Name = "recording.SK-D2.PHONE-NORM_HP-LW-SP-LN.mp3"; Extension = ".mp3" },
-                [PSCustomObject]@{ Name = "recording.SK-D2.MEETING-NORM_HP-LW-DN.mp3"; Extension = ".mp3" }
+                [PSCustomObject]@{ Name = "recording.SK-D2.MEETING-NORM_HP-LW-DN.mp3"; Extension = ".mp3" },
+                [PSCustomObject]@{ Name = "recording.SK-H2.HALLWAY-NORM_HP-LP-DN-RE.mp3"; Extension = ".mp3" }
             )
             $audioExtensions = @(".m4a", ".flac", ".mp4", ".mp3")
             $filtered = $testFiles | Where-Object {
-                $_.Extension.ToLower() -in $audioExtensions -and $_.Name -notmatch '\.(PHONE-NORM_|MEETING-NORM_|DISTANT-NORM_)'
+                $_.Extension.ToLower() -in $audioExtensions -and $_.Name -notmatch '\.(PHONE-NORM_|MEETING-NORM_|DISTANT-NORM_|HALLWAY-NORM_)'
             }
             $filtered.Count | Should -Be 1
             $filtered[0].Name | Should -Be "recording.SK-D2.mp4"

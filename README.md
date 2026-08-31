@@ -3,7 +3,7 @@
 [![CI Pipeline](https://github.com/dataquo/WHISPER/actions/workflows/ci.yml/badge.svg)](https://github.com/dataquo/WHISPER/actions/workflows/ci.yml)
 [![PowerShell 7.0+](https://img.shields.io/badge/PowerShell-7.0%2B-blue.svg)](https://github.com/PowerShell/PowerShell)
 [![Docker](https://img.shields.io/badge/Docker-WhisperX-2496ED.svg)](https://www.docker.com/)
-[![Version](https://img.shields.io/badge/Version-v06.00-brightgreen.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-v06.01-brightgreen.svg)](CHANGELOG.md)
 
 A resilient, high-throughput batch audio transcription and AI summarization pipeline powered by **PowerShell 7+**, **FFmpeg**, **WhisperX (Docker)**, **Ollama**, and **LM Studio**.
 
@@ -12,17 +12,20 @@ A resilient, high-throughput batch audio transcription and AI summarization pipe
 ## 🌟 Key Features
 
 * **Smart Batch Orchestration**: Automatically scans folders for media files, inspects existing output formats, and executes only missing stages without redundant re-transcriptions.
-* **Intelligent Filename Tagging**: Automatically detects language, DSP profile, and speaker counts directly from file naming patterns (e.g. `recording.SK-M3.mp3`).
+* **Intelligent Filename Tagging**: Automatically detects language, DSP profile, and speaker counts directly from file naming patterns (e.g. `recording.SK-E2.mp4`).
 * **Profile-Based FFmpeg Audio DSP**:
-  * **`phone`**: Narrow voice bandwidth (200–3500 Hz), speech normalization, broadcast loudness standards (-16 LUFS).
-  * **`meeting`**: Broad frequency range (80–8000 Hz) with dynamic audio normalization for variable acoustics.
-  * **`distant`**: Adaptive compression + noise suppression for noisy or far-field microphones.
+  * **`phone` (`P`)**: Narrow voice bandwidth (200–3500 Hz), speech normalization, broadcast loudness standards (-16 LUFS).
+  * **`meeting` (`M`)**: Broad frequency range (80–8000 Hz) with dynamic audio normalization for variable acoustics.
+  * **`distant` (`D`)**: Adaptive compression + noise suppression for noisy or far-field microphones.
+  * **`hallway` (`H`)**: Corridor / CCTV microphone filter chain (HP 220Hz, LP 3700Hz, `afftdn`, 380Hz notch EQ) paired with Slovak fine-tuned model (`kinit-sk`).
+  * **`echoed` (`E`)**: Specialized reverberation profile with greedy ASR decoding (`beam_size=1`, `repetition_penalty=1.2`) to suppress echoing hallucination loops across all languages.
   * **Multi-Channel Compatibility**: Automatically downmixes multi-channel audio (e.g. 5.1, 7.1 HE-AAC) to mono 16 kHz.
-* **Speaker Diarization & Multi-Format Export**: Generates `.json`, `.txt`, `.srt`, `.vtt`, and `.tsv` in a single GPU pass.
-* **Dual AI Summarization**:
-  * **`NOTES.md`**: Detailed structured meeting notes generated via LM Studio / OpenAI-compatible API.
+* **Speaker Diarization & Multi-Format Export**: Generates `.json`, `.txt`, `.srt`, `.vtt`, and `.tsv` in a single GPU pass with stutter deduplication.
+* **Context-Aware Dual AI Summarization**:
+  * **`NOTES.md`**: Detailed structured meeting notes generated via LM Studio / OpenAI-compatible API with acoustic error reconstruction.
   * **`SUMMARY.md`**: Concise structured executive summaries generated via Ollama.
-  * **`-DisableLLMs` Mode**: Pure transcription mode to skip LLM summarization when fast ASR is needed.
+  * **Selective Execution Modes**: Trigger specific LLMs via `-OnlyOllama`, `-OnlyLMStudio`, or skip them entirely with `-DisableLLM`.
+* **Automatic Language Guard**: Safeguards fine-tuned language-specific models (e.g. `kinit-sk`) to be used strictly for Slovak, falling back to multilingual `large-v3` for Czech and English.
 * **Deterministic Docker Lifecycle & VRAM Flushing**:
   * Automatically starts stopped containers and polls `/docs` or `/health` until ready.
   * Flushes GPU VRAM after each file and recovers from CUDA out-of-memory errors by restarting the configured container.
@@ -52,7 +55,7 @@ WHISPER/
 ├── docs/
 │   ├── ARCHITECTURE.md          # End-to-end technical architecture & diagrams
 │   ├── WORKFLOW_GUIDE.md        # Operations, troubleshooting & developer runbook
-│   └── adr/                     # Architecture Decision Records (0001–0007)
+│   └── adr/                     # Architecture Decision Records (0001–0008)
 ├── CHANGELOG.md                 # Release history and changelog
 ├── AGENTS.md                    # Operating guidelines for AI coding agents
 ├── GEMINI.md                    # Project rules & manual Git policies
@@ -75,11 +78,14 @@ Name your audio/video files using the standard pattern:
   * `P` $\rightarrow$ `phone` profile (narrowband speech optimization)
   * `M` $\rightarrow$ `meeting` profile (dynamic acoustic normalization)
   * `D` $\rightarrow$ `distant` profile (compression & noise suppression)
+  * `H` $\rightarrow$ `hallway` profile (reverberant corridor audio with Slovak model)
+  * `E` $\rightarrow$ `echoed` profile (universal reverberant audio with anti-hallucination decoding)
 * **`SPEAKERS`** (integer, optional): Number of distinct diarized speakers (sets `min_speakers` and `max_speakers`).
 
 ### Examples:
 * `2026-04-14_O2-Rozhovor.CS-P2.m4a` $\rightarrow$ Czech, Phone profile, 2 speakers.
 * `TeamSync_Sprint42.SK-M5.mp3` $\rightarrow$ Slovak, Meeting profile, 5 speakers.
+* `Corridor_CCTV_Sample.SK-E2.mp4` $\rightarrow$ Slovak, Echoed profile, 2 speakers.
 * `Conference_Keynote.EN-D1.flac` $\rightarrow$ English, Distant profile, 1 speaker.
 * `voice_memo.mp4` $\rightarrow$ Defaults to Phone profile with auto language detection.
 
@@ -103,21 +109,27 @@ Copy-Item config\config.local.json.example config\config.local.json
 
 ### 3. Run Batch Transcription
 ```powershell
-# Standard batch processing (ASR + LLMs)
+# Standard batch processing (ASR + All LLMs)
 pwsh -File .\src\_MASTER_WHISPER.ps1 -InputFolder "D:\Recordings\Meetings"
 
-# Fast batch processing (ASR only, skip LLMs)
-pwsh -File .\src\_MASTER_WHISPER.ps1 -InputFolder "D:\Recordings\Meetings" -DisableLLMs
+# Selective LLM processing: Ollama Summary only
+pwsh -File .\src\_MASTER_WHISPER.ps1 -InputFolder "D:\Recordings\Meetings" -OnlyOllama
+
+# Selective LLM processing: LM Studio Notes only
+pwsh -File .\src\_MASTER_WHISPER.ps1 -InputFolder "D:\Recordings\Meetings" -OnlyLMStudio
+
+# Fast batch processing (ASR only, skip all LLMs)
+pwsh -File .\src\_MASTER_WHISPER.ps1 -InputFolder "D:\Recordings\Meetings" -DisableLLM
 ```
 
 ### 4. Run Single File Transcription
 ```powershell
 pwsh -File .\src\whisper-asr-service-docker.ps1 `
-    -FilePath "D:\Recordings\meeting.m4a" `
-    -Profile meeting `
+    -FilePath "D:\Recordings\cctv_sample.SK-E2.mp4" `
+    -Profile echoed `
     -Language sk `
-    -MinSpeakers 3 `
-    -MaxSpeakers 5 `
+    -MinSpeakers 2 `
+    -MaxSpeakers 2 `
     -GenerateMode both
 ```
 
