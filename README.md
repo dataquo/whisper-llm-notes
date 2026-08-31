@@ -3,7 +3,7 @@
 [![CI Pipeline](https://github.com/dataquo/WHISPER/actions/workflows/ci.yml/badge.svg)](https://github.com/dataquo/WHISPER/actions/workflows/ci.yml)
 [![PowerShell 7.0+](https://img.shields.io/badge/PowerShell-7.0%2B-blue.svg)](https://github.com/PowerShell/PowerShell)
 [![Docker](https://img.shields.io/badge/Docker-WhisperX-2496ED.svg)](https://www.docker.com/)
-[![Version](https://img.shields.io/badge/Version-v06.01-brightgreen.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-v06.02-brightgreen.svg)](CHANGELOG.md)
 
 A resilient, high-throughput batch audio transcription and AI summarization pipeline powered by **PowerShell 7+**, **FFmpeg**, **WhisperX (Docker)**, **Ollama**, and **LM Studio**.
 
@@ -25,6 +25,7 @@ A resilient, high-throughput batch audio transcription and AI summarization pipe
   * **`NOTES.md`**: Detailed structured meeting notes generated via LM Studio / OpenAI-compatible API with acoustic error reconstruction.
   * **`SUMMARY.md`**: Concise structured executive summaries generated via Ollama.
   * **Selective Execution Modes**: Trigger specific LLMs via `-OnlyOllama`, `-OnlyLMStudio`, or skip them entirely with `-DisableLLM`.
+* **Integrated CLI Discoverability & Help**: Rich PowerShell Comment-Based Help with `-Full`, `-Examples`, `-?`, and interactive parameter auto-completion.
 * **Automatic Language Guard**: Safeguards fine-tuned language-specific models (e.g. `kinit-sk`) to be used strictly for Slovak, falling back to multilingual `large-v3` for Czech and English.
 * **Deterministic Docker Lifecycle & VRAM Flushing**:
   * Automatically starts stopped containers and polls `/docs` or `/health` until ready.
@@ -55,7 +56,7 @@ WHISPER/
 ├── docs/
 │   ├── ARCHITECTURE.md          # End-to-end technical architecture & diagrams
 │   ├── WORKFLOW_GUIDE.md        # Operations, troubleshooting & developer runbook
-│   └── adr/                     # Architecture Decision Records (0001–0008)
+│   └── adr/                     # Architecture Decision Records (0001–0009)
 ├── CHANGELOG.md                 # Release history and changelog
 ├── AGENTS.md                    # Operating guidelines for AI coding agents
 ├── GEMINI.md                    # Project rules & manual Git policies
@@ -132,6 +133,20 @@ pwsh -File .\src\whisper-asr-service-docker.ps1 `
     -MaxSpeakers 2 `
     -GenerateMode both
 ```
+
+### 5. CLI Help & Switch Discovery
+Quickly inspect supported switches, parameter aliases, and filename tagging conventions:
+```powershell
+# Full parameter reference & profile table
+Get-Help .\src\_MASTER_WHISPER.ps1 -Full
+
+# Copy-pasteable syntax examples
+Get-Help .\src\_MASTER_WHISPER.ps1 -Examples
+
+# Fast terminal syntax trigger
+.\src\_MASTER_WHISPER.ps1 -?
+```
+*💡 **Tip**: In PowerShell 7+, type `.\src\_MASTER_WHISPER.ps1 -` and press <kbd>Tab</kbd> or <kbd>Ctrl</kbd>+<kbd>Space</kbd> for interactive auto-completion of all switches and aliases.*
 
 ---
 

@@ -1,26 +1,86 @@
 <#
 .SYNOPSIS
-    Master Whisper Script - Batch Transcription Orchestrator
+    Master Whisper Script - Batch Transcription & AI Summarization Orchestrator.
+
 .DESCRIPTION
-    Scans an input folder for audio files (.m4a, .mp3, .flac, .mp4), extracts parameters 
-    from filename convention (file_name.LL-X#.EXT), checks for existing transcripts / AI notes,
-    and invokes the whisper-asr-service-docker engine for missing items.
+    Scans an input directory for audio recordings (.m4a, .mp3, .flac, .mp4), extracts ASR and
+    diarization parameters from the filename tag convention, checks for missing transcript or AI
+    summary files (.json, .txt, .srt, .tsv, .vtt, .NOTES.md, .SUMMARY.md), and invokes the
+    whisper-asr-service-docker execution engine.
+
+    -----------------------------------------------------------------------------
+    FILENAME-BASED PARAMETER CONVENTION:  [name].[LL]-[X][#].[ext]
+    -----------------------------------------------------------------------------
+    The orchestrator automatically extracts transcription settings from the filename:
+
+      * [LL] - Language Code (case-insensitive, 2 letters):
+          - SK : Slovak (targets fine-tuned Slovak models where configured)
+          - CS : Czech (uses multilingual large-v3)
+          - EN : English (uses multilingual large-v3)
+          - (omitted or untagged) : Whisper automatic language detection
+
+      * [X] - Digital Signal Processing (DSP) Profile Letter:
+          - P : Phone   (HP-LW-SP-LN: High-Pass 200Hz, Low-Pass 3500Hz, Voice Leveler, -16 LUFS)
+          - M : Meeting (HP-LW-DN: High-Pass 80Hz, Light Denoise, -16 LUFS)
+          - D : Distant (HP-LP-AC-SN: High-Pass 100Hz, Low-Pass 6000Hz, Dynamic Gate, -16 LUFS)
+          - H : Hallway (HP-LP-DN-EQ: High-Pass 220Hz, Low-Pass 3700Hz, Notch EQ, -16 LUFS)
+          - E : Echoed  (ECHOED-NORM: Echo suppression, Notch 380Hz + Greedy beam_size=1 decoding)
+
+      * [#] - Speaker Count for Diarization (1-9):
+          - Sets both min_speakers and max_speakers to this exact count.
+          - Example: '2' sets min_speakers=2, max_speakers=2.
+
+      * Untagged Files (e.g., 'recording.m4a'):
+          - Defaults to Phone profile (P), auto-detect language, min_speakers=2, max_speakers=2.
+
+    FILENAME EXAMPLES:
+      meeting_sync.SK-M4.mp3    -> Slovak, Meeting profile, 4 speakers
+      client_call.CS-P2.m4a     -> Czech, Phone profile, 2 speakers
+      cctv_corridor.SK-E2.mp4   -> Slovak, Echoed profile, 2 speakers
+      hall_lecture.EN-D1.flac   -> English, Distant profile, 1 speaker
+      voice_note.m4a            -> Default: Phone profile, Auto language, 2 speakers
+
 .PARAMETER InputFolder
-    Path to the directory containing audio recordings. Defaults to current directory.
+    Path to the directory containing audio recordings. Defaults to '.' (current working directory).
+
 .PARAMETER ConfigPath
-    Optional explicit path to a custom configuration JSON file.
+    Optional explicit path to a custom configuration JSON file, overriding layered defaults.
+
 .PARAMETER DisableLLM
-    When specified (aliases: DisableLLMs, SkipLLM, NoLLM), skips all LLM summarization (Ollama and LM Studio).
+    When specified (aliases: -DisableLLMs, -SkipLLM, -NoLLM), skips all LLM summarization
+    (both Ollama and LM Studio). Generates only raw WhisperX ASR transcript files.
+
 .PARAMETER OnlyOllama
-    When specified (aliases: OnlyOlama, OllamaOnly), generates ONLY Ollama summaries (.SUMMARY.md) and skips LM Studio notes.
+    When specified (aliases: -OnlyOlama, -OllamaOnly), generates ONLY Ollama executive
+    summaries (.SUMMARY.md) and skips LM Studio detailed notes.
+
 .PARAMETER OnlyLMStudio
-    When specified (aliases: LMStudioOnly, OnlyLM), generates ONLY LM Studio detailed notes (.NOTES.md) and skips Ollama summaries.
+    When specified (aliases: -LMStudioOnly, -OnlyLM), generates ONLY LM Studio structured
+    meeting notes (.NOTES.md) and skips Ollama executive summaries.
+
+.EXAMPLE
+    .\_MASTER_WHISPER.ps1 -InputFolder "D:\Recordings"
+    Scans 'D:\Recordings' and runs full pipeline (ASR + LM Studio notes + Ollama summary) for all pending files.
+
+.EXAMPLE
+    .\_MASTER_WHISPER.ps1 -OnlyOllama
+    Scans current folder and generates only missing Ollama executive summaries (.SUMMARY.md).
+
+.EXAMPLE
+    .\_MASTER_WHISPER.ps1 -OnlyLMStudio
+    Scans current folder and generates only missing LM Studio structured notes (.NOTES.md).
+
+.EXAMPLE
+    .\_MASTER_WHISPER.ps1 -DisableLLM
+    Performs only WhisperX audio transcription and secondary formats, bypassing LLM processing.
+
 .NOTES
-    Version: v06.01
+    Version: v06.02
+    - Enriched Comment-Based Help with comprehensive Filename Parameter Convention, profile details, and .EXAMPLE blocks.
+    - Native PowerShell Get-Help, -Examples, and -? parameter discovery integration.
     - Added -OnlyOllama and -OnlyLMStudio switch parameters for selective LLM generation.
-    - Added support for new profiles: 'hallway' (H) and 'echoed' (E) with suffix 'ECHOED-NORM_HP-LP-DN-EQ'.
     - Fully dynamic profile and suffix resolution from layered AppConfig.
-    - Fixed case-insensitive parameter alias conflict on PowerShell 7+.
+    - Pure batch orchestrator decoupled from Docker lifecycle and FFmpeg DSP.
 #>
 
 param(

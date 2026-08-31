@@ -1,10 +1,26 @@
 # WHISPER Operational Runbook & Workflow Guide
 
-This guide provides practical instructions for daily operations, troubleshooting, testing, and developing within the **WHISPER** repository (v06.01).
+This guide provides practical instructions for daily operations, troubleshooting, testing, and developing within the **WHISPER** repository (v06.02).
 
 ---
 
 ## 1. Daily Operations
+
+### Interactive Help & Parameter Discovery
+Whenever you need a quick reminder of supported switches, parameter aliases, or filename tagging syntax:
+
+```powershell
+# View full help with complete filename convention syntax and parameter details
+Get-Help .\src\_MASTER_WHISPER.ps1 -Full
+
+# View ready-to-run copy-paste command examples
+Get-Help .\src\_MASTER_WHISPER.ps1 -Examples
+
+# Fast terminal syntax reminder
+.\src\_MASTER_WHISPER.ps1 -?
+```
+
+* **IntelliSense Auto-Completion**: In PowerShell 7+, type `.\src\_MASTER_WHISPER.ps1 -` and press <kbd>Tab</kbd> or <kbd>Ctrl</kbd>+<kbd>Space</kbd> to inspect available switches and aliases interactively.
 
 ### Batch Processing a Directory
 To transcribe all pending recordings in a folder:
@@ -27,7 +43,7 @@ pwsh -File .\src\_MASTER_WHISPER.ps1 -InputFolder "D:\Recordings\2026-August"
   ```powershell
   pwsh -File .\src\_MASTER_WHISPER.ps1 -InputFolder "D:\Recordings" -OnlyLMStudio
   ```
-  *(Aliases: `-OnlyLMStudio`, `-OnlyLMstudio`, `-LMStudioOnly`, `-OnlyLM`)*
+  *(Aliases: `-OnlyLMStudio`, `-OnlyLM`, `-LMStudioOnly`)*
 
 * **Pure WhisperX Transcription (No LLMs)**:
   ```powershell

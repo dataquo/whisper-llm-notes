@@ -8,6 +8,24 @@ All notable changes to the WHISPER project are documented in this file. The proj
 
 ---
 
+## [v06.02] - 2026-09-01
+### Added
+* **Architecture Decision Record 0009** (`docs/adr/0009-comment-based-help-and-cli-discovery.md`): Documents the design evaluation between automatic console banner injection, custom `-Help` switches, and idiomatic PowerShell Comment-Based Help (CBH).
+* **Comprehensive Comment-Based Help (CBH)** in `src/_MASTER_WHISPER.ps1`:
+  * Detailed `.DESCRIPTION` section breaking down the `[name].[LL]-[X][#].[ext]` filename parameter tagging convention (Language codes, DSP profile letters `P`/`M`/`D`/`H`/`E`, speaker count diarization).
+  * Explicit documentation for all parameters (`-InputFolder`, `-ConfigPath`, `-DisableLLM`, `-OnlyOllama`, `-OnlyLMStudio`) and their case-insensitive aliases.
+  * Four practical, copy-pasteable `.EXAMPLE` blocks accessible via `Get-Help .\src\_MASTER_WHISPER.ps1 -Examples`.
+* **Standard PowerShell Parameter Discovery**:
+  * Seamless integration with native `Get-Help`, `Get-Help -Full`, `Get-Help -Examples`, and `.\src\_MASTER_WHISPER.ps1 -?`.
+  * Interactive PowerShell 7+ Tab and <kbd>Ctrl</kbd>+<kbd>Space</kbd> parameter auto-completion.
+
+### Changed
+* **Documentation Modernization**:
+  * Updated `README.md`, `docs/ARCHITECTURE.md`, and `docs/WORKFLOW_GUIDE.md` to reflect `v06.02` and include parameter discovery runbooks.
+  * Updated `AGENTS.md` and `GEMINI.md` to maintain Comment-Based Help integrity across future parameter refactoring.
+
+---
+
 ## [v06.01] - 2026-09-01
 ### Added
 * **Architecture Decision Record 0008** (`docs/adr/0008-reverberant-hallway-profiles-and-acoustic-reconstruction.md`).

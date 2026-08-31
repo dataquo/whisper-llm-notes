@@ -231,6 +231,10 @@ v06.01
 - Acoustic Reconstruction LLM Prompting: Added specialized contextual acoustic guidelines into LM Studio (.NOTES.md) and Ollama (.SUMMARY.md) prompt templates to reconstruct distorted phonemes into coherent domain dialogue.
 - Dynamic Log Parameters: New-TranscriptionLog dynamically records exact ffmpeg_filters, audio_format, model, and VAD parameters without static hardcoding.
 - Multi-format Deduplication: Enhanced Clean-TranscriptText to eliminate consecutive stuttering line loops across TXT, SRT, VTT, and TSV outputs.
+
+v06.02
+- Enhanced Comment-Based Help & Discoverability: Added comprehensive parameter convention documentation, profile matrices, and example usages across orchestrator and engine.
+- Full ADR 0009 Architecture Specification: Documented idiomatic PowerShell help patterns and CLI discovery UX.
 #>
 
 

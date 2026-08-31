@@ -31,11 +31,11 @@ WHISPER/
 ├── docs/
 │   ├── ARCHITECTURE.md          # End-to-end technical architecture & diagrams
 │   ├── WORKFLOW_GUIDE.md        # Operations & troubleshooting guide
-│   └── adr/                     # Architectural Decision Records (0001-0008)
+│   └── adr/                     # Architectural Decision Records (0001-0009)
 ├── .github/workflows/
 │   ├── ci.yml                   # PSScriptAnalyzer + Pester 5/6 CI pipeline
 │   └── release.yml              # Automated release packaging on tag push
-├── CHANGELOG.md                 # Full release history from v01.00 to v06.01
+├── CHANGELOG.md                 # Full release history from v01.00 to v06.02
 ├── GEMINI.md                    # Active rules (NO automatic git commits/pushes)
 └── README.md                    # Project overview & quickstart
 ```
@@ -108,6 +108,9 @@ WHISPER/
    * Ensure changes pass `Invoke-ScriptAnalyzer -Path ./src -Recurse -Settings ./PSScriptAnalyzerSettings.psd1` with zero Errors.
 4. **CIM over WMI**:
    * Always use `Get-CimInstance` instead of deprecated `Get-WmiObject` to prevent PowerShell 7 implicit remoting freezes.
+5. **Comment-Based Help (CBH) & Parameter Discoverability**:
+   * All parameter additions, switches, or aliases in `src/` must maintain full Comment-Based Help (`.SYNOPSIS`, `.DESCRIPTION`, `.PARAMETER`, `.EXAMPLE`).
+   * Filename tagging conventions and DSP profile additions must be mirrored in `.DESCRIPTION` so `Get-Help` and `-?` remain the single source of CLI truth.
 
 ---
 

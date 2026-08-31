@@ -1,6 +1,6 @@
 # WHISPER Technical Architecture & Design
 
-This document details the end-to-end technical architecture, data processing pipeline, profile definitions, and service integrations of the **WHISPER** project (v06.01).
+This document details the end-to-end technical architecture, data processing pipeline, profile definitions, and service integrations of the **WHISPER** project (v06.02).
 
 ---
 
@@ -163,3 +163,23 @@ On every transcription run, [src/whisper-asr-service-docker.ps1](file:///d:/_DOC
 * **Tokens Per Second (TPS)**:
   $$\text{TPS} = \frac{\text{Approximate Token Count}}{\text{Processing Time (s)}}$$
 * **Hardware Inventory**: CPU cores, RAM modules, GPU driver version, motherboard model, and OS build recorded in JSON logs.
+
+---
+
+## 8. CLI Discovery & Comment-Based Help Architecture
+
+As documented in [ADR 0009](file:///d:/_DOCUMENTS/_SCRIPTS/WHISPER/docs/adr/0009-comment-based-help-and-cli-discovery.md), CLI parameter discoverability and filename convention hints are delivered through standard PowerShell Comment-Based Help (CBH) rather than runtime console banner overhead.
+
+### Architectural Flow:
+```mermaid
+flowchart LR
+    User["User Terminal"] -->|Get-Help / -? / Tab| Engine["PowerShell Help & AST Parser"]
+    Engine -->|Parses on Demand| CBH["src/_MASTER_WHISPER.ps1 Header Block\n(.SYNOPSIS, .DESCRIPTION, .PARAMETER, .EXAMPLE)"]
+    CBH -->|Renders| Out["Interactive Console Output\n- Full Filename Tagging Convention\n- DSP Profiles & Fallbacks\n- All Parameter Aliases\n- Practical Syntax Examples"]
+```
+
+### Supported Discoverability Commands:
+* `Get-Help .\src\_MASTER_WHISPER.ps1 -Full`: Complete synopsis, parameter matrix, alias cross-references, and filename tag rules.
+* `Get-Help .\src\_MASTER_WHISPER.ps1 -Examples`: Immediate copy-paste CLI examples.
+* `.\src\_MASTER_WHISPER.ps1 -?`: Built-in quick terminal syntax reminder.
+* <kbd>Tab</kbd> / <kbd>Ctrl</kbd>+<kbd>Space</kbd>: Auto-complete parameter discovery with dynamic alias resolution.
