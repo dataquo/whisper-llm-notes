@@ -61,7 +61,7 @@ v03.03
 
 | Profile | Suffix | Filters | Description |
 |---------|--------|---------|-------------|
-| phone | `PHONE-NORM_HP-LW-SP-LN` | highpass(200Hz), lowpass(3500Hz), speechnorm, loudnorm | Narrow speech bandwidth for phone calls |
+| phone | `PHONE-NORM_HP-LW-SP-LN` | highpass(200Hz), lowpass(3500Hz), speechnorm, loudnorm | Narrowband speech for phone calls |
 | meeting | `MEETING-NORM_HP-LW-DN` | highpass(80Hz), lowpass(8000Hz), dynaudnorm, loudnorm | Full speech range with dynamic normalization |
 | distant | `DISTANT-NORM_HP-LP-AC-SN` | highpass(200Hz), lowpass(4000Hz), acompressor, speechnorm, loudnorm | Compressor + SN for noisy environments |
 
@@ -235,6 +235,16 @@ v06.01
 v06.02
 - Enhanced Comment-Based Help & Discoverability: Added comprehensive parameter convention documentation, profile matrices, and example usages across orchestrator and engine.
 - Full ADR 0009 Architecture Specification: Documented idiomatic PowerShell help patterns and CLI discovery UX.
+- Explicit Script Name & Version Logging: Split "script_version" into "script_name" and "script_version" (v06.02), eliminating the unversioned fallback string.
+- Docker Container & Whisper Service Metadata: Added Get-WhisperContainerMetadata to capture container_name, image, image_id, api_version, cudnn_version, and status in transcription logs.
+- Ollama Service Version in Summary: Dynamically queries Ollama /api/version and includes service version in SUMMARY.MD AI processing information.
+
+v06.03
+- Lead-in Silence Diarization Priming: Added `lead_in_silence_seconds` configuration parameter to prime PyAnnote's temporal receptive field with FFmpeg `adelay`.
+- Automatic Sub-second Timestamp Compensation: Integrated `Adjust-TranscriptTimestamps` to seamlessly subtract the lead-in silence offset across segments, words, and word_segments with 0.0s floor clamping and 3-decimal rounding across all 5 generated output formats (.json, .txt, .srt, .vtt, .tsv).
+- Re-calibrated Phone Profile Bandwidth: Retained distinct 200–3500 Hz telephony bandpass with `speechnorm=e=4:r=0.0001:l=1` and -16 LUFS broadcast normalization to cleanly differentiate from wideband meeting profiles.
+- Diacritic & Encoding Guard: Enhanced Clean-TranscriptText regex with unicode escape literals (\u2013\u2014) and explicit UTF-8 without BOM streams to prevent diacritic corruption on Czech and Slovak accented text.
+- Comprehensive Hardware & Service Telemetry: Extended New-TranscriptionLog to capture Docker container state, image ID, API/cuDNN versions, and lead_in_silence_seconds configuration.
 #>
 
 
@@ -358,6 +368,100 @@ function Wait-WhisperServiceReady {
         Start-Sleep -Seconds 1
     }
     return $false
+}
+
+# Retrieves Docker container and Whisper service metadata for auditing and logging
+function Get-WhisperContainerMetadata {
+    param(
+        [string]$ContainerName,
+        [string]$ApiUrl,
+        [PSCustomObject]$PipelineConfig
+    )
+
+    $pCfg = if ($PipelineConfig) {
+        $PipelineConfig
+    } elseif ($script:AppConfig) {
+        $script:AppConfig
+    } elseif (Get-Variable -Name "AppConfig" -ValueOnly -ErrorAction SilentlyContinue) {
+        Get-Variable -Name "AppConfig" -ValueOnly -ErrorAction SilentlyContinue
+    } else {
+        $null
+    }
+
+    if (-not $ContainerName -and $pCfg -and $pCfg.whisper_service -and $pCfg.whisper_service.docker_container_name) {
+        $ContainerName = $pCfg.whisper_service.docker_container_name
+    }
+    if (-not $ContainerName) {
+        $ContainerName = "whisper-asr-service"
+    }
+
+    if (-not $ApiUrl -and $pCfg -and $pCfg.whisper_service -and $pCfg.whisper_service.api_url) {
+        $ApiUrl = $pCfg.whisper_service.api_url
+    }
+    if (-not $ApiUrl) {
+        $ApiUrl = "http://localhost:9000/asr"
+    }
+
+    $meta = [PSCustomObject]@{
+        container_name = $ContainerName
+        image          = $null
+        image_id       = $null
+        api_version    = $null
+        cudnn_version  = $null
+        status         = $null
+    }
+
+    # 1. Inspect Docker container directly if docker command is available
+    if (Get-Command docker -ErrorAction SilentlyContinue) {
+        try {
+            $inspectJson = docker inspect $ContainerName 2>$null
+            if ($LASTEXITCODE -ne 0 -or -not $inspectJson) {
+                # Try fallback container names if configured name did not match running container
+                foreach ($fallbackName in @("whisperx-api", "whisper-asr-service")) {
+                    if ($fallbackName -ne $ContainerName) {
+                        $fbJson = docker inspect $fallbackName 2>$null
+                        if ($LASTEXITCODE -eq 0 -and $fbJson) {
+                            $inspectJson = $fbJson
+                            $ContainerName = $fallbackName
+                            break
+                        }
+                    }
+                }
+            }
+
+            if ($inspectJson) {
+                $inspect = $inspectJson | ConvertFrom-Json
+                if ($inspect -and $inspect.Count -gt 0) {
+                    $item = $inspect[0]
+                    $meta.container_name = if ($item.Name) { $item.Name.TrimStart('/') } else { $ContainerName }
+                    $meta.image          = $item.Config.Image
+                    $meta.image_id       = if ($item.Image -and $item.Image.Length -gt 19) { $item.Image.Substring(0, 19) } else { $item.Image }
+                    $meta.api_version    = $item.Config.Labels.'org.opencontainers.image.version'
+                    $meta.cudnn_version  = $item.Config.Labels.'com.nvidia.cudnn.version'
+                    $meta.status         = $item.State.Status
+                    return $meta
+                }
+            }
+        } catch {
+            # docker inspect failed, fallback to HTTP below
+        }
+    }
+
+    # 2. HTTP Fallback via /openapi.json if docker inspect did not populate api_version
+    if (-not $meta.api_version -and $ApiUrl) {
+        try {
+            $baseUri = ([System.Uri]$ApiUrl).GetLeftPart([System.UriPartial]::Authority)
+            $openapi = Invoke-RestMethod -Uri "$baseUri/openapi.json" -TimeoutSec 2 -ErrorAction Stop
+            if ($openapi -and $openapi.info -and $openapi.info.version) {
+                $meta.api_version = $openapi.info.version
+                if (-not $meta.status) { $meta.status = "online" }
+            }
+        } catch {
+            # API endpoint offline or unreachable
+        }
+    }
+
+    return $meta
 }
 
 function Ensure-WhisperContainerRunning {
@@ -525,16 +629,64 @@ function Save-Utf8($path, $content) {
 function Clean-TranscriptText([string]$Text) {
     if ([string]::IsNullOrWhiteSpace($Text)) { return "" }
     # 1. Reject lines containing only punctuation or dots (e.g. ".", "...", "---")
-    if ($Text -match '^[\s\.\,\;\:\-\—_]+$') {
+    if ($Text -match '^[\s.,;:_\-\u2013\u2014]+$') {
         return ""
     }
     # 2. Deduplicate word-level repetitions: e.g. "pozor, pozor, pozor, pozor" -> "pozor"
-    $cleaned = [regex]::Replace($Text, '(?i)(\b[\wáčďéíĺľňóôŕšťúýžÁČĎÉÍĹĽŇÓÔŔŠŤÚÝŽ0-9]+\b)(?:[,\s]+\1){2,}', '$1')
+    $cleaned = [regex]::Replace($Text, '(?i)(\b\w+\b)(?:[,\s]+\1){2,}', '$1')
     # 3. Deduplicate repeated punctuation / dots inside text
     if ($cleaned -match '^\s*(\.{3}\s*)+$') {
         return ""
     }
     return $cleaned.Trim()
+}
+
+# Adjusts transcript segment and word timestamps by subtracting lead-in silence offset
+function Adjust-TranscriptTimestamps {
+    param(
+        [Parameter(Mandatory=$true)]
+        [PSCustomObject]$Data,
+        [Parameter(Mandatory=$true)]
+        [double]$OffsetSeconds
+    )
+
+    if ($OffsetSeconds -le 0) {
+        return $Data
+    }
+
+    if ($Data.segments) {
+        foreach ($seg in $Data.segments) {
+            if ($null -ne $seg.start) {
+                $seg.start = [Math]::Round([Math]::Max(0.0, [double]$seg.start - $OffsetSeconds), 3)
+            }
+            if ($null -ne $seg.end) {
+                $seg.end = [Math]::Round([Math]::Max(0.0, [double]$seg.end - $OffsetSeconds), 3)
+            }
+            if ($seg.words) {
+                foreach ($w in $seg.words) {
+                    if ($null -ne $w.start) {
+                        $w.start = [Math]::Round([Math]::Max(0.0, [double]$w.start - $OffsetSeconds), 3)
+                    }
+                    if ($null -ne $w.end) {
+                        $w.end = [Math]::Round([Math]::Max(0.0, [double]$w.end - $OffsetSeconds), 3)
+                    }
+                }
+            }
+        }
+    }
+
+    if ($Data.word_segments) {
+        foreach ($ws in $Data.word_segments) {
+            if ($null -ne $ws.start) {
+                $ws.start = [Math]::Round([Math]::Max(0.0, [double]$ws.start - $OffsetSeconds), 3)
+            }
+            if ($null -ne $ws.end) {
+                $ws.end = [Math]::Round([Math]::Max(0.0, [double]$ws.end - $OffsetSeconds), 3)
+            }
+        }
+    }
+
+    return $Data
 }
 
 # --- 2a. System Information Function ---
@@ -723,18 +875,19 @@ if ($ExtractedParams.SpeakerCount) {
 
 # --- 2b. Script Version Detection ---
 
-# Extract script version dynamically from the filename (e.g., whisper-asr-service-docker.v04.06.ps1 -> v04.06)
-$ScriptVersion = if ($MyInvocation.MyCommand.Path) {
-    $ScriptPath = $MyInvocation.MyCommand.Path
-    $FileName = [System.IO.Path]::GetFileName($ScriptPath)
-    # Extract version from pattern *.vXX.YY.ps1 or whisper-asr-service-docker.vXX.YY.ps1
-    if ($FileName -match "v(\d+\.\d+)(\.\d+)?\.ps1$") {
-        "whisper-asr-service-docker.v$($Matches[1])"
-    } else {
-        $FileName
-    }
+$ScriptVersionNumber = "v06.03"
+
+$ScriptName = if ($MyInvocation.MyCommand.Path) {
+    [System.IO.Path]::GetFileName($MyInvocation.MyCommand.Path)
 } else {
-    "whisper-asr-service-docker.v04.06.ps1"  # Fallback for safety
+    "whisper-asr-service-docker.ps1"
+}
+
+# Extract script version dynamically from the filename if versioned (e.g. *.vXX.YY.ps1), else use canonical version
+$ScriptVersion = if ($ScriptName -match "v(\d+\.\d+)(\.\d+)?\.ps1$") {
+    "v$($Matches[1])"
+} else {
+    $ScriptVersionNumber
 }
 
 # --- 2b. Logging Functions ---
@@ -751,9 +904,16 @@ function New-TranscriptionLog {
         [string]$FullUrl,
         [string]$QueryString,
         [string]$ProcessedFile,
-        [string]$TempProcessedFile
+        [string]$TempProcessedFile,
+        [object]$ContainerInfo = $null,
+        [PSCustomObject]$PipelineConfig = $null
     )
     
+    if (-not $ContainerInfo) {
+        $pConfig = if ($PipelineConfig) { $PipelineConfig } elseif ($script:AppConfig) { $script:AppConfig } else { $AppConfig }
+        $ContainerInfo = Get-WhisperContainerMetadata -PipelineConfig $pConfig
+    }
+
     # v04.04 - New log filename pattern: ProcessedFile.WHISPER.YYYYMMDD-HHmmss.log (matching processed audio file naming)
     $TimestampSuffix = Get-Date -Format "yyyyMMdd-HHmmss"
     # Extract just the base filename from TempProcessedFile, then append .WHISPER.timestamp.log suffix
@@ -770,12 +930,14 @@ function New-TranscriptionLog {
     # v04.04/04.05 - Machine-readable JSON format for log file
     $SystemInfo = Get-SystemInfo
     
-    $LogData = @{
-        script_version = $ScriptVersion
-        execution_time = $Timestamp
-        day_of_week = $DayOfWeek
+    $LogData = [ordered]@{
+        script_name           = $ScriptName
+        script_version        = $ScriptVersion
+        execution_time        = $Timestamp
+        day_of_week           = $DayOfWeek
         
-        system_information = $SystemInfo
+        container_information = $ContainerInfo
+        system_information    = $SystemInfo
         
         configuration_parameters = @{
             profile = $Profile
@@ -788,6 +950,7 @@ function New-TranscriptionLog {
             initial_prompt = if ($Config.initial_prompt) { $Config.initial_prompt.Replace("`r`n", " ") } else { "" }
             temperature = $Config.temperature
             ffmpeg_filters = $Config.ffmpeg_filters
+            lead_in_silence_seconds = $Config.lead_in_silence_seconds
             audio_format = $Config.audio_format
             use_neural_enhancer = $Config.use_neural_enhancer
         }
@@ -855,28 +1018,30 @@ function Write-CompletionSummary {
     }
     
     # Create new object with all properties plus the new timing property
-    # Note: system_information is already in $ExistingData from New-TranscriptionLog
+    # Note: system_information and container_information are already in $ExistingData from New-TranscriptionLog
     $UpdatedData = [PSCustomObject]@{
-        script_version = $ExistingData.script_version
-        execution_time = $ExistingData.execution_time
-        day_of_week = $ExistingData.day_of_week
-        system_information = $ExistingData.system_information
+        script_name              = if ($ExistingData.script_name) { $ExistingData.script_name } else { $ScriptName }
+        script_version           = $ExistingData.script_version
+        execution_time           = $ExistingData.execution_time
+        day_of_week              = $ExistingData.day_of_week
+        container_information    = $ExistingData.container_information
+        system_information       = $ExistingData.system_information
         configuration_parameters = $ExistingData.configuration_parameters
-        api_parameters = $ExistingData.api_parameters
-        query_string = $ExistingData.query_string
-        full_api_url = $ExistingData.full_api_url
-        processing_information = $ExistingData.processing_information
-        timing = @{
-            start_time = $StartTime.ToString("yyyy-MM-dd HH:mm:ss")
-            end_time = $EndTime.ToString("yyyy-MM-dd HH:mm:ss")
+        api_parameters           = $ExistingData.api_parameters
+        query_string             = $ExistingData.query_string
+        full_api_url             = $ExistingData.full_api_url
+        processing_information   = $ExistingData.processing_information
+        timing                   = @{
+            start_time             = $StartTime.ToString("yyyy-MM-dd HH:mm:ss")
+            end_time               = $EndTime.ToString("yyyy-MM-dd HH:mm:ss")
             total_duration_seconds = $TotalSeconds
         }
-        performance_metrics = @{
-            audio_duration_seconds = [Math]::Round($AudioDuration, 2)
+        performance_metrics      = @{
+            audio_duration_seconds  = [Math]::Round($AudioDuration, 2)
             processing_time_seconds = [Math]::Round($ProcessingTime, 2)
-            real_time_factor_rtf = [Math]::Round($RTF, 3)
-            approx_token_count = $TokenCount
-            tokens_per_second_tps = [Math]::Round($TPS, 2)
+            real_time_factor_rtf    = [Math]::Round($RTF, 3)
+            approx_token_count      = $TokenCount
+            tokens_per_second_tps   = [Math]::Round($TPS, 2)
         }
     }
     
@@ -912,6 +1077,7 @@ $Config = if ($AppConfig.profiles -and $AppConfig.profiles.$Profile) {
         "audio_format"               = if ($null -ne $pCfg.audio_format) { "$($pCfg.audio_format)" } else { "mp3" }
         "suffix"                     = if ($null -ne $pCfg.suffix) { "$($pCfg.suffix)" } else { "${Profile}-processed" }
         "model"                      = if ($null -ne $pCfg.model) { "$($pCfg.model)" } else { $null }
+        "lead_in_silence_seconds"    = if ($null -ne $pCfg.lead_in_silence_seconds) { [double]$pCfg.lead_in_silence_seconds } else { 0.0 }
         "use_neural_enhancer"        = if ($null -ne $pCfg.use_neural_enhancer) { [bool]$pCfg.use_neural_enhancer } else { $false }
         "use_wpe_dereverb"           = if ($null -ne $pCfg.use_wpe_dereverb) { [bool]$pCfg.use_wpe_dereverb } else { $false }
     }
@@ -931,6 +1097,7 @@ $Config = if ($AppConfig.profiles -and $AppConfig.profiles.$Profile) {
         "repetition_penalty"         = $null
         "no_repeat_ngram_size"       = $null
         "ffmpeg_filters"             = "highpass=f=200,lowpass=f=3500,speechnorm=e=4:r=0.0001:l=1,loudnorm=I=-16:TP=-1.5:LRA=11"
+        "lead_in_silence_seconds"    = 0.0
         "audio_format"               = "mp3"
         "suffix"                     = "PHONE-NORM_HP-LW-SP-LN"
         "model"                      = $null
@@ -980,8 +1147,14 @@ if ($ProcessedFileValid) {
     Write-Host "Skipping FFmpeg preprocessing..." -ForegroundColor Yellow
 } else {
     # Preprocess audio file using FFmpeg with profile filter chain from config
-    Write-Host "Preprocessing audio file with FFmpeg ($Profile profile)..." -ForegroundColor Yellow
     $ffmpegFilter = $Config.ffmpeg_filters
+    if ($Config.lead_in_silence_seconds -and [double]$Config.lead_in_silence_seconds -gt 0) {
+        $leadInMs = [int]([double]$Config.lead_in_silence_seconds * 1000)
+        if ($ffmpegFilter -notmatch "adelay=") {
+            $ffmpegFilter = "adelay=${leadInMs}:all=1,$ffmpegFilter"
+        }
+        Write-Host "Prepending lead-in silence: $($Config.lead_in_silence_seconds)s (${leadInMs}ms) to prime PyAnnote diarization..." -ForegroundColor DarkYellow
+    }
     $FfMpegCmd = "ffmpeg.exe -i `"$FilePath`" -af `"$ffmpegFilter`" $FfMpegOutputParams -ac 1 -ar 16000 `"$TempProcessedFile`" -y"
 
     # Set FFREPORT environment variable for FFmpeg logging with timestamped filename
@@ -1270,7 +1443,8 @@ if (-not (Test-Path "$FullBase.json")) {
         -FullUrl $FullUrl `
         -QueryString $QueryString `
         -ProcessedFile $TempProcessedFile `
-        -TempProcessedFile $TempProcessedFile
+        -TempProcessedFile $TempProcessedFile `
+        -PipelineConfig $AppConfig
 
 
     # Write BaseURL
@@ -1413,6 +1587,14 @@ if (-not (Test-Path "$FullBase.json")) {
     # v04.04 - Record transcription end time immediately after successful API response, before container restart
     $TranscriptionEndTime = Get-Date
 
+    # Compensate for lead-in silence if added during FFmpeg preprocessing
+    if ($Config.lead_in_silence_seconds -and [double]$Config.lead_in_silence_seconds -gt 0) {
+        $leadInSec = [double]$Config.lead_in_silence_seconds
+        Write-Host "Compensating timestamps for lead-in silence (-${leadInSec}s)..." -ForegroundColor Cyan
+        $ApiResult = Adjust-TranscriptTimestamps -Data $ApiResult -OffsetSeconds $leadInSec
+        $Response = $ApiResult | ConvertTo-Json -Depth 20
+    }
+
     # Use parsed result for file generation
     $Data = $ApiResult
     
@@ -1437,7 +1619,7 @@ if (-not (Test-Path "$FullBase.json")) {
     
     # Re-read $Data from existing JSON since segments weren't populated in this run
     try {
-        $JsonContent = Get-Content "$FullBase.json" -Raw -ErrorAction Stop
+        $JsonContent = [System.IO.File]::ReadAllText("$FullBase.json", $Utf8NoBom)
         $ApiResult = $JsonContent | ConvertFrom-Json
         if (-not $ApiResult.segments) { 
             Write-Error "Existing JSON file has no segments. Please re-run transcription.`nResponse: $($JsonContent)"
@@ -1591,7 +1773,7 @@ if ($TranscriptionEndTime -and $LogPath -and (Test-Path $LogPath)) {
     $RTF = if ($AudioDuration -gt 0) { [Math]::Round($ProcessingTime / $AudioDuration, 3) } else { 0 }
 
     # Approximate token count: 1 token ≈ 4 characters (or ~3-4 words)
-    $txtContent = Get-Content "$FullBase.txt" -Raw
+    $txtContent = [System.IO.File]::ReadAllText("$FullBase.txt", $Utf8NoBom)
     $charCount = $txtContent.Length
     $ApproxTokenCount = [Math]::Round($charCount / 4, 0)
 
@@ -1639,7 +1821,7 @@ $TranscriptPath = "$FullBase.txt"
 
 # Read the transcript file content to include in the prompt
 if (Test-Path $TranscriptPath) {
-    $TranscriptContent = Get-Content -Raw $TranscriptPath
+    $TranscriptContent = [System.IO.File]::ReadAllText($TranscriptPath, $Utf8NoBom)
 } else {
     Write-Warning "Transcript file not found: $TranscriptPath. Skipping notes generation."
     $TranscriptContent = ""
@@ -1727,7 +1909,7 @@ try {
 ### LM Studio (NOTES.MD)
 
 | Parameter | Value |
-| :--- | :--- | :--- |
+| :--- | :--- |
 | API Server | $LmStudioEndpoint |
 | Model | $RemoteModel |
 | Transcript Path | $TranscriptPath |
@@ -1764,7 +1946,7 @@ $TranscriptPath = "$FullBase.txt"
 
 # Read the transcript file content to include in the prompt
 if (Test-Path $TranscriptPath) {
-    $TranscriptContent = Get-Content -Raw $TranscriptPath
+    $TranscriptContent = [System.IO.File]::ReadAllText($TranscriptPath, $Utf8NoBom)
 } else {
     Write-Warning "Transcript file not found: $TranscriptPath. Skipping notes generation."
     $TranscriptContent = ""
@@ -1815,6 +1997,17 @@ try {
 
                                          
     if ($SummaryResponse.response) {
+        # Query Ollama version if reachable
+        $OllamaVersion = try {
+            $OllamaBaseUri = ([System.Uri]$OllamaEndpoint).GetLeftPart([System.UriPartial]::Authority)
+            $vRes = Invoke-RestMethod -Uri "$OllamaBaseUri/api/version" -TimeoutSec 2 -ErrorAction Stop
+            if ($vRes -and $vRes.version) { $vRes.version } else { $null }
+        } catch {
+            $null
+        }
+
+        $OllamaVersionRow = if ($OllamaVersion) { "`r`n| Service Version | Ollama $OllamaVersion |" } else { "" }
+
         # Append parameters section in markdown format
         $ParametersSection = @"
 
@@ -1824,8 +2017,8 @@ try {
 ### Ollama (SUMMARY.MD)
 
 | Parameter | Value |
-| :--- | :--- | :--- |
-| API Server | $OllamaEndpoint |
+| :--- | :--- |
+| API Server | $OllamaEndpoint |$OllamaVersionRow
 | Model | $OllamaModel |
 | Transcript Path | $TranscriptPath |
 | Inference | Ollama |

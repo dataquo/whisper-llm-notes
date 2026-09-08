@@ -1,6 +1,6 @@
 # WHISPER Technical Architecture & Design
 
-This document details the end-to-end technical architecture, data processing pipeline, profile definitions, and service integrations of the **WHISPER** project (v06.02).
+This document details the end-to-end technical architecture, data processing pipeline, profile definitions, and service integrations of the **WHISPER** project (v06.03).
 
 ---
 
@@ -24,21 +24,22 @@ flowchart TD
     end
 
     subgraph AudioPreprocessing["3. Preprocessing (FFmpeg)"]
-        G --> H["FFmpeg Audio Pipeline\n(-ac 1 Mono + Bandwidth Filter + Notch EQ + Loudnorm)"]
+        G --> H["FFmpeg Audio Pipeline\n(-ac 1 Mono + Bandwidth Filter + adelay Priming + Notch EQ + Loudnorm)"]
         H --> I["Temp Preprocessed Audio\n(.WAV / .MP3 16kHz, Length > 1KB)"]
     end
     
     subgraph ASRTranscription["4. Speech Recognition (WhisperX Docker)"]
         I --> J["WhisperX API POST\n(http://localhost:9000/asr)"]
         J --> K["Verbose JSON Response\n(Segments + Word Timestamps + Diarization)"]
+        K --> K2["Adjust-TranscriptTimestamps\n(Compensate Lead-in Offset, Floor 0.0s)"]
     end
 
     subgraph MultiFormatGeneration["5. Format Re-generation (RAM)"]
-        K --> L["JSON Transcript (.json)"]
-        K --> M["Speaker Formatted TXT (.txt)"]
-        K --> N["SRT Subtitles (.srt)"]
-        K --> O["WebVTT Subtitles (.vtt)"]
-        K --> P["TSV Data Table (.tsv)"]
+        K2 --> L["JSON Transcript (.json)"]
+        K2 --> M["Speaker Formatted TXT (.txt)"]
+        K2 --> N["SRT Subtitles (.srt)"]
+        K2 --> O["WebVTT Subtitles (.vtt)"]
+        K2 --> P["TSV Data Table (.tsv)"]
     end
 
     subgraph AISummarization["6. Context-Aware AI Summaries (Optional)"]
@@ -84,11 +85,16 @@ Each profile applies specialized DSP filter chains to optimize voice clarity bef
 
 | Profile | Tag | Suffix Identifier | Bandwidth & DSP Filters | Best For | Model Dispatched |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **`phone`** | `P` | `PHONE-NORM_HP-LW-SP-LN` | Highpass: 200 Hz, Lowpass: 3500 Hz<br>`speechnorm=e=10:r=0.0005:l=1`<br>`loudnorm=I=-16:TP=-1.5:LRA=11` | Cell phone calls, landlines, low-bitrate recordings | `large-v3` |
+| **`phone`** | `P` | `PHONE-NORM_HP-LW-SP-LN` | Highpass: 200 Hz, Lowpass: 3500 Hz<br>`speechnorm=e=4:r=0.0001:l=1`<br>`loudnorm=I=-16:TP=-1.5:LRA=11`<br>*(Lead-in silence: 1.5s)* | Cell phone calls, landlines | `large-v3` |
 | **`meeting`** | `M` | `MEETING-NORM_HP-LW-DN` | Highpass: 80 Hz, Lowpass: 8000 Hz<br>`dynaudnorm=p=0.9:m=50:s=5:g=15`<br>`loudnorm=I=-16:TP=-1.5:LRA=11` | Multi-person conference room meetings, webinars | `large-v3` |
 | **`distant`** | `D` | `DISTANT-NORM_HP-LP-AC-SN` | Highpass: 200 Hz, Lowpass: 4000 Hz<br>`acompressor=threshold=-24dB:ratio=4`<br>`speechnorm=e=4:r=0.0001:l=1`<br>`loudnorm=I=-16:TP=-1.5:LRA=11` | Far-field microphones, noisy ambient environments | `large-v3` |
 | **`hallway`** | `H` | `HALLWAY-NORM_HP-LP-DN-EQ` | Highpass: 220 Hz, Lowpass: 3700 Hz<br>`afftdn=nr=14:nf=-32:tn=1`<br>`equalizer=f=380:width_type=q:w=1.2:g=-4`<br>`loudnorm=I=-16:TP=-1.5:LRA=11` | Slovak corridor / hallway CCTV camera audio | `kinit-sk` (SK) / `large-v3` (CS/EN) |
 | **`echoed`** | `E` | `ECHOED-NORM_HP-LP-DN-EQ` | Highpass: 220 Hz, Lowpass: 3700 Hz<br>`afftdn=nr=14:nf=-32:tn=1`<br>`equalizer=f=380:width_type=q:w=1.2:g=-4`<br>`loudnorm=I=-16:TP=-1.5:LRA=11` | Reverberant concrete rooms, universal multilingual echo | `large-v3` (Greedy Search, penalty=1.2) |
+
+### Lead-in Silence & Diarization Priming (`lead_in_silence_seconds`)
+For conversational telephone calls (`phone` profile), initial utterances often suffer from boundary edge defects in PyAnnote's sliding receptive window, leaving opening greetings unassigned (`speaker: null`).
+* **FFmpeg Priming**: Setting `"lead_in_silence_seconds": 1.5` prepends `adelay=1500:all=1` to the preprocessed audio sent to WhisperX.
+* **Timestamp Compensation**: The engine's `Adjust-TranscriptTimestamps` function subtracts 1.5s from all segment and word start/end timestamps (clamped to 0.0s) before generating `.json`, `.txt`, `.srt`, `.vtt`, and `.tsv` files, maintaining exact time alignment with the original media.
 
 ---
 
@@ -183,3 +189,58 @@ flowchart LR
 * `Get-Help .\src\_MASTER_WHISPER.ps1 -Examples`: Immediate copy-paste CLI examples.
 * `.\src\_MASTER_WHISPER.ps1 -?`: Built-in quick terminal syntax reminder.
 * <kbd>Tab</kbd> / <kbd>Ctrl</kbd>+<kbd>Space</kbd>: Auto-complete parameter discovery with dynamic alias resolution.
+
+---
+
+## 9. Telephone Diarization & Sub-Second Timestamp Compensation
+
+As documented in [ADR 0010](file:///d:/_DOCUMENTS/_SCRIPTS/WHISPER/docs/adr/0010-telephone-diarization-boundary-silence-and-alignment.md), telephone recordings frequently exhibit speaker diarization boundary anomalies caused by PyAnnote's left-edge receptive field deficit and Wav2Vec2 forced alignment silence stretching.
+
+### Sub-Second Offset Compensation Flow:
+1. **Configurable Lead-in Silence**: Profiles define `"lead_in_silence_seconds"` (default `1.5s` for `phone`, `0.0s` for others).
+2. **FFmpeg Padding**: When `lead_in_silence_seconds > 0`, the engine prepends `adelay=$([int]($Offset * 1000)):all=1` to the preprocessed audio before upload to WhisperX.
+3. **In-Memory Adjustment (`Adjust-TranscriptTimestamps`)**:
+   - Subtracts `lead_in_silence_seconds` from all segment, word, and word-segment timestamps.
+   - Enforces a zero floor (`[Math]::Max(0.0, [double]$timestamp - $offset)`).
+   - Rounds all timecodes to 3 decimal places.
+4. **Multi-Format Export Synchronization**: Compensated timestamps flow directly into `.json`, `.txt`, `.srt`, `.vtt`, and `.tsv`, guaranteeing 100% timecode synchronization with original source media.
+
+---
+
+## 10. Runtime Telemetry, Container Metadata & Service Auditing
+
+As documented in [ADR 0011](file:///d:/_DOCUMENTS/_SCRIPTS/WHISPER/docs/adr/0011-runtime-telemetry-and-container-metadata-auditing.md), production auditing requires explicit tracking of pipeline script versions, Docker container environments, and LLM inference endpoints to trace transcription fidelity across infrastructure updates.
+
+### A. Dual-Property Script Identity & Version Resolution
+The engine separates script identity from semantic versioning:
+* **`script_name`**: Automatically extracted from `$MyInvocation.MyCommand.Path` (e.g. `whisper-asr-service-docker.ps1`).
+* **`script_version`**: Evaluated via canonical constant `$ScriptVersionNumber = "v06.03"` with legacy backward compatibility if versioned script filenames (`*.vXX.YY.ps1`) are executed.
+
+### B. Multi-Tier Container Metadata Discovery (`Get-WhisperContainerMetadata`)
+The telemetry collector enforces a resilient 3-tier inspection strategy to guarantee complete metadata capture:
+
+```mermaid
+flowchart TD
+    Start["New-TranscriptionLog Invoked"] --> Tier1["Tier 1: Docker CLI Inspect\n(Resolved Container: whisperx-api / whisper-asr-service)"]
+    Tier1 -->|Success| PopulateAll["Extract Container Metadata:\n- container_name\n- image & short image_id\n- api_version (OpenContainers label)\n- cudnn_version (NVIDIA label)\n- status (running / healthy)"]
+    Tier1 -->|NotFound / Failure| Tier2["Tier 2: Candidate Scan Fallback\n(Checks alternate: whisperx-api, whisper-asr-service)"]
+    Tier2 -->|Found| PopulateAll
+    Tier2 -->|NotFound / No Docker| Tier3["Tier 3: HTTP API Fallback\n(GET $ApiUrl/openapi.json)"]
+    Tier3 -->|HTTP 200| PopulatePartial["Extract API Info:\n- api_version: info.version\n- status: online\n(Docker-specific fields set to null)"]
+    Tier3 -->|Offline| PopulateOffline["status: offline"]
+    PopulateAll --> WriteLog["Write Initial & Final JSON Log"]
+    PopulatePartial --> WriteLog
+    PopulateOffline --> WriteLog
+```
+
+### C. Logging Schema & Metadata Attributes
+Every transcription generates a structured `.log` file containing:
+* **`script_name` & `script_version`**: Exact pipeline release version (`v06.03`).
+* **`container_information`**: Container name, image tag, image layer digest, internal API version, cuDNN version, and status.
+* **`api_parameters`**: Language code and selected model name (`large-v3`, `kinit-sk`, etc.).
+* **`configuration_parameters`**: Profile, diarization toggles, VAD thresholds, speaker bounds, lead-in silence seconds, and FFmpeg filter chains.
+* **`system_information`**: CPU model, RAM modules, GPU driver, motherboard, and OS build.
+* **`performance_metrics`**: Audio duration, processing time, RTF throughput, token count, and TPS.
+
+### D. LLM Service Auditing (`.SUMMARY.md`)
+During executive summary generation via Ollama, the engine dynamically queries `GET /api/version` (guarded by a 2-second timeout) and records the running Ollama version alongside model parameters in the summary footer table.

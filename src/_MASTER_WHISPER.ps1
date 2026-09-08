@@ -20,7 +20,7 @@
           - (omitted or untagged) : Whisper automatic language detection
 
       * [X] - Digital Signal Processing (DSP) Profile Letter:
-          - P : Phone   (HP-LW-SP-LN: High-Pass 200Hz, Low-Pass 3500Hz, Voice Leveler, -16 LUFS)
+          - P : Phone   (PHONE-NORM: High-Pass 200Hz, Low-Pass 3500Hz, Voice Leveler, 1.5s Lead-in Priming, -16 LUFS)
           - M : Meeting (HP-LW-DN: High-Pass 80Hz, Light Denoise, -16 LUFS)
           - D : Distant (HP-LP-AC-SN: High-Pass 100Hz, Low-Pass 6000Hz, Dynamic Gate, -16 LUFS)
           - H : Hallway (HP-LP-DN-EQ: High-Pass 220Hz, Low-Pass 3700Hz, Notch EQ, -16 LUFS)
@@ -75,7 +75,9 @@
     Performs only WhisperX audio transcription and secondary formats, bypassing LLM processing.
 
 .NOTES
-    Version: v06.02
+    Version: v06.03
+    - Re-calibrated Phone profile (P) to distinct narrowband bandpass (200-3500Hz) with voice leveler and 1.5s lead-in silence priming.
+    - Integrated automatic sub-second timestamp compensation in execution engine.
     - Enriched Comment-Based Help with comprehensive Filename Parameter Convention, profile details, and .EXAMPLE blocks.
     - Native PowerShell Get-Help, -Examples, and -? parameter discovery integration.
     - Added -OnlyOllama and -OnlyLMStudio switch parameters for selective LLM generation.

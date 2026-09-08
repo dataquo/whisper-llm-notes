@@ -15,3 +15,8 @@
 * **No Guessing**: Never write heuristic fallback guessing loops for container names or ports.
 * **Layered Config**: Base defaults live in `config/config.default.json` (tracked in Git); machine overrides live in `config/config.local.json` (gitignored). `Get-PipelineConfig` deep-merges them so partial overrides never erase baseline settings.
 * **Deterministic Restarts**: Container lifecycle (`Ensure-WhisperContainerRunning`, `Restart-WhisperContainer`) strictly uses `$AppConfig.whisper_service.docker_container_name` and polls `/docs` or `/health` for readiness.
+
+## 📊 Runtime Telemetry & Container Metadata Auditing
+* **Explicit Version Logging**: Maintain split `"script_name"` and `"script_version"` (`v06.03`) in all `.log` outputs; never revert to unversioned filename fallback.
+* **Resilient Container Metadata**: `Get-WhisperContainerMetadata` must forward `$PipelineConfig` and use multi-tier inspection (Docker inspect $\to$ candidate scan fallback $\to$ HTTP `/openapi.json`) to guarantee zero-null telemetry logs.
+

@@ -24,6 +24,18 @@ Describe "Whisper ASR Service Docker Tests" {
             $fnBody = "function global:Get-PipelineConfig { $($Matches[1])"
             . ([ScriptBlock]::Create($fnBody))
         }
+
+        # Extract Get-WhisperContainerMetadata function definition and inject into global scope
+        if ($ScriptContent -match '(?ms)function Get-WhisperContainerMetadata\s*\{(.+?^\})') {
+            $fnBody = "function global:Get-WhisperContainerMetadata { $($Matches[1])"
+            . ([ScriptBlock]::Create($fnBody))
+        }
+
+        # Extract Adjust-TranscriptTimestamps function definition and inject into global scope
+        if ($ScriptContent -match '(?ms)function Adjust-TranscriptTimestamps\s*\{(.+?^\})') {
+            $fnBody = "function global:Adjust-TranscriptTimestamps { $($Matches[1])"
+            . ([ScriptBlock]::Create($fnBody))
+        }
     }
 
     Context "Timestamp Formatting (Format-Time)" {
@@ -211,6 +223,112 @@ Describe "Whisper ASR Service Docker Tests" {
             $langEn = "en"
             $chosenEn = if ($candidateModel -match '(?i)(kinit|slovak|-sk)' -and $langEn -ne "sk") { $baselineModel } else { $candidateModel }
             $chosenEn | Should -Be $baselineModel
+        }
+    }
+
+    Context "Script Version & Container Metadata" {
+        It "Extracts canonical script version and script name when running unversioned script" {
+            $versionMatch = $ScriptContent -match '\$ScriptVersionNumber = "([^"]+)"'
+            $versionMatch | Should -BeTrue
+            $version = $Matches[1]
+            $version | Should -Match "^v\d+\.\d+"
+
+            # Verify version resolution logic with unversioned name
+            $testFileName = "whisper-asr-service-docker.ps1"
+            $resolvedVersion = if ($testFileName -match "v(\d+\.\d+)(\.\d+)?\.ps1$") {
+                "v$($Matches[1])"
+            } else {
+                $version
+            }
+            $resolvedVersion | Should -Be $version
+
+            # Verify version resolution logic with legacy versioned name
+            $legacyFileName = "whisper-asr-service-docker.v04.06.ps1"
+            $legacyVersion = if ($legacyFileName -match "v(\d+\.\d+)(\.\d+)?\.ps1$") {
+                "v$($Matches[1])"
+            } else {
+                $version
+            }
+            $legacyVersion | Should -Be "v04.06"
+        }
+
+        It "Returns structured container metadata with required schema fields" {
+            $meta = Get-WhisperContainerMetadata -ContainerName "whisperx-api" -ApiUrl "http://localhost:9000/asr"
+            $meta | Should -Not -BeNullOrEmpty
+            $propNames = $meta.PSObject.Properties.Name
+            $propNames | Should -Contain "container_name"
+            $propNames | Should -Contain "image"
+            $propNames | Should -Contain "image_id"
+            $propNames | Should -Contain "api_version"
+            $propNames | Should -Contain "cudnn_version"
+            $propNames | Should -Contain "status"
+        }
+    }
+
+    Context "Lead-in Silence & Timestamp Compensation" {
+        It "Shifts segment and word timestamps by offset and clamps to 0.0" {
+            $mockData = [PSCustomObject]@{
+                segments = @(
+                    [PSCustomObject]@{
+                        start = 1.2
+                        end   = 3.5
+                        text  = "First line"
+                        words = @(
+                            [PSCustomObject]@{ start = 1.2; end = 2.0; word = "First" },
+                            [PSCustomObject]@{ start = 2.1; end = 3.5; word = "line" }
+                        )
+                    },
+                    [PSCustomObject]@{
+                        start = 4.0
+                        end   = 6.5
+                        text  = "Second line"
+                        words = @(
+                            [PSCustomObject]@{ start = 4.0; end = 5.0; word = "Second" },
+                            [PSCustomObject]@{ start = 5.1; end = 6.5; word = "line" }
+                        )
+                    }
+                )
+            }
+
+            $adjusted = Adjust-TranscriptTimestamps -Data $mockData -OffsetSeconds 1.5
+            
+            # First segment (start 1.2 - 1.5 clamped to 0.0, end 3.5 - 1.5 = 2.0)
+            $adjusted.segments[0].start | Should -Be 0.0
+            $adjusted.segments[0].end | Should -Be 2.0
+            $adjusted.segments[0].words[0].start | Should -Be 0.0
+            $adjusted.segments[0].words[0].end | Should -Be 0.5
+            $adjusted.segments[0].words[1].start | Should -Be 0.6
+            $adjusted.segments[0].words[1].end | Should -Be 2.0
+
+            # Second segment (start 4.0 - 1.5 = 2.5, end 6.5 - 1.5 = 5.0)
+            $adjusted.segments[1].start | Should -Be 2.5
+            $adjusted.segments[1].end | Should -Be 5.0
+            $adjusted.segments[1].words[0].start | Should -Be 2.5
+            $adjusted.segments[1].words[0].end | Should -Be 3.5
+        }
+
+        It "Leaves timestamps unchanged when offset is 0.0" {
+            $mockData = [PSCustomObject]@{
+                segments = @(
+                    [PSCustomObject]@{
+                        start = 2.5
+                        end   = 5.0
+                        text  = "No change"
+                        words = @()
+                    }
+                )
+            }
+
+            $adjusted = Adjust-TranscriptTimestamps -Data $mockData -OffsetSeconds 0.0
+            $adjusted.segments[0].start | Should -Be 2.5
+            $adjusted.segments[0].end | Should -Be 5.0
+        }
+
+        It "Loads lead_in_silence_seconds correctly from phone profile in config" {
+            $scriptDir = Join-Path $PSScriptRoot "..\src"
+            $config = Get-PipelineConfig -ScriptDirectory $scriptDir
+            $config.profiles.phone.lead_in_silence_seconds | Should -Be 1.5
+            $config.profiles.meeting.lead_in_silence_seconds | Should -Be 0.0
         }
     }
 }

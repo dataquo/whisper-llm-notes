@@ -31,11 +31,11 @@ WHISPER/
 ├── docs/
 │   ├── ARCHITECTURE.md          # End-to-end technical architecture & diagrams
 │   ├── WORKFLOW_GUIDE.md        # Operations & troubleshooting guide
-│   └── adr/                     # Architectural Decision Records (0001-0009)
+│   └── adr/                     # Architectural Decision Records (0001-0011)
 ├── .github/workflows/
 │   ├── ci.yml                   # PSScriptAnalyzer + Pester 5/6 CI pipeline
 │   └── release.yml              # Automated release packaging on tag push
-├── CHANGELOG.md                 # Full release history from v01.00 to v06.02
+├── CHANGELOG.md                 # Full release history from v01.00 to v06.03
 ├── GEMINI.md                    # Active rules (NO automatic git commits/pushes)
 └── README.md                    # Project overview & quickstart
 ```
@@ -90,6 +90,17 @@ WHISPER/
 ### C. Language Guards & ASR Decoding Guidelines
 * **Language-Specific Model Guard**: Fine-tuned models targeting a single language (such as `whisper-large-v3-kinit-sk-ct2` for Slovak) must NEVER be applied to other languages (`cs`, `en`, etc.). The engine automatically intercepts non-matching languages and redirects them to multilingual `large-v3`.
 * **Reverberation & CCTV Decoding Constraints**: On muffled or reverberant audio, standard beam search can generate severe hallucination loops. Always utilize greedy search (`beam_size=1`), `condition_on_previous_text=false`, and `repetition_penalty=1.2` (as configured in the `echoed` profile).
+
+### D. Speaker Diarization, Receptive Boundary Priming & Timestamp Integrity
+* **No Script-Level Speaker Backfilling**: Never write post-hoc heuristics or guessing loops in PowerShell to reassign or backfill speaker IDs. Diarization must be generated faithfully by WhisperX and PyAnnote.
+* **Sub-Second Timestamp Compensation (`lead_in_silence_seconds`)**: When padding audio in FFmpeg (e.g. `adelay` to prime PyAnnote's temporal receptive window), always ensure the execution engine applies `Adjust-TranscriptTimestamps` to subtract the offset with a 0.0s floor clamp across segments, words, and word-segments before generating any secondary formats.
+* **Regex Encoding Safety**: All regex pattern cleaning (such as in `Clean-TranscriptText`) must use explicit unicode escape sequences (e.g. `\u2013\u2014`) rather than literal em-dashes to avoid stripping Czech/Slovak diacritics under Windows default code pages.
+
+### E. Script Versioning & Runtime Telemetry Auditing
+* **Canonical Script Version**: Maintain explicit constant `$ScriptVersionNumber = "v06.03"` and `$ScriptName = "whisper-asr-service-docker.ps1"`. Never re-introduce filename-based versioning for scripts inside `src/`.
+* **Telemetry Logging Invariants**: Both initial logs (`New-TranscriptionLog`) and completion summaries (`Write-CompletionSummary`) must write separate `"script_name"` and `"script_version"` properties.
+* **Container Metadata Forwarding (`Get-WhisperContainerMetadata`)**: Always forward `$PipelineConfig` into container inspection so machine-level overrides (`config.local.json`) are respected. Maintain the 3-tier inspection strategy (configured Docker inspect $\to$ candidate fallback $\to$ HTTP `/openapi.json`) to guarantee zero-null telemetry logs.
+* **LLM Service Version Auditing**: When integrating LLM summarization endpoints, query `/api/version` (guarded by a $\le 2\text{s}$ timeout) and record service version rows in markdown parameter tables.
 
 ---
 

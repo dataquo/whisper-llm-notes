@@ -1,6 +1,6 @@
 # WHISPER Operational Runbook & Workflow Guide
 
-This guide provides practical instructions for daily operations, troubleshooting, testing, and developing within the **WHISPER** repository (v06.02).
+This guide provides practical instructions for daily operations, troubleshooting, testing, and developing within the **WHISPER** repository (v06.03).
 
 ---
 
@@ -129,6 +129,24 @@ curl.exe -s http://localhost:11434/api/tags
 curl.exe -s http://10.0.0.162:1234/v1/models
 ```
 
+### Auditing Pipeline & Container Telemetry in `.log` Files
+Every transcription run produces a JSON execution log (`{basename}.WHISPER.YYYYMMDD-HHmmss.log`). To inspect the runtime environment, script version, and Docker container details from PowerShell:
+
+```powershell
+# Parse the latest transcription log as JSON
+$log = Get-Content .\Recordings\meeting.WHISPER.*.log -Tail 100 | Out-String | ConvertFrom-Json
+
+# Inspect script version and execution identity
+$log | Select-Object script_name, script_version, execution_time
+
+# Inspect Docker container environment
+$log.container_information | Format-List
+
+# Inspect ASR decoding parameters & model
+$log.api_parameters
+$log.configuration_parameters
+```
+
 ---
 
 ## 5. Local Development & Testing
@@ -165,9 +183,13 @@ Invoke-ScriptAnalyzer -Path ./src -Recurse -Settings ./PSScriptAnalyzerSettings.
 | Problem | Cause | Solution |
 | :--- | :--- | :--- |
 | `Cannot restart container: '...' not found` | Local container name differs from `config.default.json` | Set `"docker_container_name"` in `config/config.local.json`. |
+| `Container metadata fields (image, cudnn) are null in log` | Docker daemon unreachable or non-standard container name | Ensure Docker is running. The engine automatically attempts fallback inspection on `whisperx-api` and `whisper-asr-service`. |
 | `Model hallucinates parliamentary phrases` | Slovak fine-tuned model (`kinit-sk`) running on muffled echo audio | Switch filename tag from `.SK-H2` to `.SK-E2` (`echoed` profile uses neutral OpenAI `large-v3`). |
 | `Repeating word loops ("na päťkrát...")` | Low acoustic clarity causing beam search loop | Handled automatically in profile `echoed` (`beam_size=1`, `repetition_penalty=1.2`). |
 | `GPU Out of Memory (CUDA OOM)` | Ollama or other LLMs retaining GPU VRAM | Whisper engine automatically restarts the container. Or run `ollama stop <model>`. |
 | `Audio preprocessing yielded empty/invalid stream` | Video file has no audio stream or corrupt track | Input file contains no sound. Check FFmpeg log (`.log`) in target directory. |
+| `Opening greetings have no speaker label ([NONE])` | PyAnnote left-edge receptive field boundary deficit on immediate speech | Enable `"lead_in_silence_seconds": 1.5` in profile configuration to prepend lead-in padding (see ADR 0010). |
+| `Single speaker label covers both question and answer` | Trailing word stretched across pause into next speaker's turn by Wav2Vec2 | Inherent limitation of Wav2Vec2 forced alignment without VAD token. See detailed analysis in ADR 0010. |
+| `Accented characters stripped from text` | Windows-1252 / UTF-8 encoding mismatch in regex | Enforce UTF-8 without BOM (`$Utf8NoBom`) and use unicode escapes (`\u2013\u2014`) in regex cleaners. |
 | `MetadataError: parameter alias conflict` | Case-insensitive alias collision in PowerShell | Resolved in v06.01; ensure all parameters use clean, distinct aliases. |
 | `PSScriptAnalyzer warnings` | Formatting or syntax violation | Run `Invoke-ScriptAnalyzer -Path ./src` and fix flagged lines. |

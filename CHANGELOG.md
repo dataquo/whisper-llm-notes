@@ -4,9 +4,35 @@ All notable changes to the WHISPER project are documented in this file. The proj
 
 ---
 
-## [Unreleased]
+## [v06.03] - 2026-09-08
+### Added
+* **Architecture Decision Record 0011** (`docs/adr/0011-runtime-telemetry-and-container-metadata-auditing.md`):
+  * Documents the evaluation of runtime pipeline versioning, container telemetry auditing, and failover discovery strategies.
+* **Architecture Decision Record 0010** (`docs/adr/0010-telephone-diarization-boundary-silence-and-alignment.md`):
+  * Comprehensive technical root cause analysis of telephone audio diarization, PyAnnote sliding convolutional receptive window, Wav2Vec2 forced alignment silence-stretching, and architectural alternatives.
+* **Docker Container & Whisper Service Telemetry in Transcription Logs**:
+  * Added `Get-WhisperContainerMetadata` helper function in `src/whisper-asr-service-docker.ps1` to capture `container_name`, `image`, `image_id`, `api_version`, `cudnn_version`, and `status` in `New-TranscriptionLog` and `Write-CompletionSummary`.
+  * **Configuration Forwarding**: Passes loaded `$AppConfig` directly into logging functions, ensuring machine-specific container names in `config.local.json` (such as `whisperx-api`) are inspected instead of hardcoded defaults.
+  * **Dynamic Candidate Fallback**: If the configured container fails inspection, automatically scans active candidate containers (`whisperx-api`, `whisper-asr-service`) before engaging HTTP fallback.
+  * **HTTP Fallback**: Queries `$ApiUrl/openapi.json` to extract `api_version` and set status to `"online"` when running on remote Docker hosts without CLI access.
+* **Ollama Service Version in Markdown Summaries**:
+  * Dynamically queries Ollama's `/api/version` (guarded by a 2-second timeout) and appends `| Service Version | Ollama <version> |` to the `AI Processing Information` table in `.SUMMARY.md`.
+* **Lead-in Silence Diarization Priming (`lead_in_silence_seconds`) for `phone` Profile**:
+  * Automatically prepends 1.5 seconds of silence via FFmpeg (`adelay=1500:all=1`) when preprocessing phone calls to prime PyAnnote's temporal receptive field.
+  * Added `Adjust-TranscriptTimestamps` helper to subtract the 1.5s offset from all segment, word, and word-segment timestamps (clamping to 0.0s, rounding to 3 decimals), ensuring 100% timecode synchronization across all generated formats (`.json`, `.txt`, `.srt`, `.vtt`, `.tsv`).
+* **Expanded Test Suite**:
+  * Added unit tests covering canonical version resolution, legacy filename backward-compatibility, container metadata schema completeness, and lead-in silence compensation (34/34 passing).
 
----
+### Changed
+* **Explicit Script Name & Version in Transcription Logs**:
+  * Replaced legacy regex-only `$ScriptVersion` with canonical `$ScriptVersionNumber = "v06.03"` and `$ScriptName = "whisper-asr-service-docker.ps1"`.
+  * Separated `"script_version"` into distinct `"script_name"` and `"script_version"` fields in `.log` outputs, eliminating the unversioned fallback string.
+* **Markdown Table Formatting**:
+  * Corrected column separator count across `.SUMMARY.md` and `.NOTES.md` AI Processing Information tables from 3 columns to 2 columns (`| :--- | :--- |`).
+* **Telephone Audio Bandwidth Calibration for `phone` Profile**:
+  * Finalized sharp bandpass (`200–3500 Hz`) with speech normalization (`speechnorm=e=4:r=0.0001:l=1`) and broadcast loudness normalization (`loudnorm=I=-16:TP=-1.5:LRA=11`) to maintain clear acoustic differentiation from wideband meeting profiles (`80–8000 Hz`).
+* **Diacritic & Encoding Guard**:
+  * Enhanced `Clean-TranscriptText` regex with unicode escape literals (`\u2013\u2014`) and explicit UTF-8 without BOM streams (`[System.IO.File]::ReadAllText($Path, $Utf8NoBom)`) to protect Czech and Slovak diacritics against character corruption.
 
 ## [v06.02] - 2026-09-01
 ### Added

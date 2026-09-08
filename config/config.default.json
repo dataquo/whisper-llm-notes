@@ -31,6 +31,7 @@
       "vad_filter": false,
       "vad_onset": 0.5,
       "vad_offset": 0.363,
+      "lead_in_silence_seconds": 1.5,
       "ffmpeg_filters": "highpass=f=200,lowpass=f=3500,speechnorm=e=4:r=0.0001:l=1,loudnorm=I=-16:TP=-1.5:LRA=11"
     },
     "meeting": {
@@ -39,6 +40,7 @@
       "vad_filter": true,
       "vad_onset": 0.5,
       "vad_offset": 0.363,
+      "lead_in_silence_seconds": 0.0,
       "ffmpeg_filters": "highpass=f=80,lowpass=f=8000,dynaudnorm=f=150:g=15,loudnorm=I=-16:TP=-1.5:LRA=11"
     },
     "distant": {
@@ -47,6 +49,7 @@
       "vad_filter": true,
       "vad_onset": 0.5,
       "vad_offset": 0.363,
+      "lead_in_silence_seconds": 0.0,
       "ffmpeg_filters": "highpass=f=200,lowpass=f=4000,acompressor=threshold=-24dB:ratio=4:attack=5:release=50,speechnorm=e=4:r=0.0001:l=1,loudnorm=I=-16:TP=-1.5:LRA=11"
     },
     "hallway": {
@@ -57,6 +60,7 @@
       "vad_filter": true,
       "vad_onset": 0.55,
       "vad_offset": 0.45,
+      "lead_in_silence_seconds": 0.0,
       "temperature": 0.0,
       "initial_prompt": "",
       "use_neural_enhancer": false,
@@ -70,6 +74,7 @@
       "vad_filter": true,
       "vad_onset": 0.55,
       "vad_offset": 0.45,
+      "lead_in_silence_seconds": 0.0,
       "temperature": 0.0,
       "beam_size": 1,
       "condition_on_previous_text": false,

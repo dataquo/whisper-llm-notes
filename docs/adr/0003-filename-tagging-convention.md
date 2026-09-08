@@ -20,7 +20,7 @@ Adopt a declarative filename suffix syntax:
 ### Grammar
 * **`LANG`** (2 characters, optional): `CS` (Czech), `SK` (Slovak), `EN` (English), or omitted for Whisper auto-detection.
 * **`PROFILE`** (1 character, optional):
-  * `P` $\rightarrow$ `phone` (narrow bandwidth 200–3500 Hz, speech normalization).
+  * `P` $\rightarrow$ `phone` (wideband 80–7500 Hz, speech normalization).
   * `M` $\rightarrow$ `meeting` (wide range 80–8000 Hz, dynamic normalization).
   * `D` $\rightarrow$ `distant` (compression + adaptive noise reduction).
 * **`SPEAKERS`** (integer, optional): Explicit diarization speaker count.
