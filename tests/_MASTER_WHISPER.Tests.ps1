@@ -67,6 +67,12 @@ Describe "Master Whisper Script Tests" {
             $result.Profile | Should -Be "phone"
             $result.MinSpeakers | Should -Be 2
             $result.MaxSpeakers | Should -Be 2
+            $result.IsDefault | Should -BeTrue
+        }
+
+        It "Marks tagged files with IsDefault as false" {
+            $result = Parse-FileNameParameters -FileName "customer_call.EN-P2.m4a"
+            $result.IsDefault | Should -BeFalse
         }
     }
 

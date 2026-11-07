@@ -75,7 +75,9 @@
     Performs only WhisperX audio transcription and secondary formats, bypassing LLM processing.
 
 .NOTES
-    Version: v06.04
+    Version: v06.05
+    - High-visibility untagged profile alerts in bright red notifying users when recordings lack .LL-X# tagging.
+    - Zero-speech resilience allowing blank transcripts to be safely generated without crashing pipeline batch loops.
     - Universal -LiteralPath enforcement across all filesystem cmdlets (Test-Path, Get-Content, Get-Item) to handle bracketed [ ] filenames without wildcard globbing failures.
     - Re-calibrated Phone profile (P) to distinct narrowband bandpass (200-3500Hz) with voice leveler and 1.5s lead-in silence priming.
     - Integrated automatic sub-second timestamp compensation in execution engine.
@@ -182,6 +184,7 @@ function Parse-FileNameParameters {
             Language    = $Language
             MinSpeakers = $SpeakerNumber
             MaxSpeakers = $SpeakerNumber
+            IsDefault   = $false
         }
     }
     
@@ -191,6 +194,7 @@ function Parse-FileNameParameters {
         Language    = ""
         MinSpeakers = 2
         MaxSpeakers = 2
+        IsDefault   = $true
     }
 }
 
@@ -353,6 +357,9 @@ foreach ($File in $AudioFiles) {
         $Params = Parse-FileNameParameters -FileName $File.Name
         
         Write-Host "  Filename: $($File.Name)" -ForegroundColor Cyan
+        if ($Params.IsDefault) {
+            Write-Host "  WARNING: No profile tag defined in filename '$($File.Name)'. Using default profile '$($Params.Profile)' with auto-detection. Recommended: tag filename as [name].[LL]-[X][#].[ext] (e.g. .SK-M2, .CS-P2, .EN-D1)." -ForegroundColor Red
+        }
         
         # Report which files are missing
         $MissingFiles = @()

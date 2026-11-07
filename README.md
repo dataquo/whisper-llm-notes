@@ -3,7 +3,7 @@
 [![CI Pipeline](https://github.com/dataquo/WHISPER/actions/workflows/ci.yml/badge.svg)](https://github.com/dataquo/WHISPER/actions/workflows/ci.yml)
 [![PowerShell 7.0+](https://img.shields.io/badge/PowerShell-7.0%2B-blue.svg)](https://github.com/PowerShell/PowerShell)
 [![Docker](https://img.shields.io/badge/Docker-WhisperX-2496ED.svg)](https://www.docker.com/)
-[![Version](https://img.shields.io/badge/Version-v06.04-brightgreen.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-v06.05-brightgreen.svg)](CHANGELOG.md)
 
 A resilient, high-throughput batch audio transcription and AI summarization pipeline powered by **PowerShell 7+**, **FFmpeg**, **WhisperX (Docker)**, **Ollama**, and **LM Studio**.
 
@@ -13,6 +13,8 @@ A resilient, high-throughput batch audio transcription and AI summarization pipe
 
 * **Smart Batch Orchestration**: Automatically scans folders for media files, inspects existing output formats, and executes only missing stages without redundant re-transcriptions.
 * **Intelligent Filename Tagging**: Automatically detects language, DSP profile, and speaker counts directly from file naming patterns (e.g. `recording.SK-E2.mp4`).
+* **High-Visibility Terminal Alerts**: Emits prominent red warnings whenever media files lack profile tagging, notifying users that defaults are being applied and encouraging standard convention.
+* **Resilient Silence & Zero-Speech Handling**: Patched WhisperX VAD pipeline and PowerShell output generators prevent crashes on quiet or silent audio, gracefully outputting blank transcripts without stalling folder batches.
 * **Profile-Based FFmpeg Audio DSP**:
   * **`phone` (`P`)**: Telephony speech bandpass (200–3500 Hz), speech normalization, 1.5s lead-in silence priming, broadcast loudness standards (-16 LUFS).
   * **`meeting` (`M`)**: Broad frequency range (80–8000 Hz) with dynamic audio normalization for variable acoustics.

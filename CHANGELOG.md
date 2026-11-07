@@ -4,6 +4,29 @@ All notable changes to the WHISPER project are documented in this file. The proj
 
 ---
 
+## [v06.05] - 2026-11-07
+### Added
+* **Architecture Decision Record 0013** (`docs/adr/0013-empty-speech-vad-silence-and-untagged-profile-alerts.md`):
+  * Comprehensive technical analysis of silent/no-speech audio handling, PyAnnote VAD zero-segment behavior, Hugging Face Transformers pipeline iterator crashes, and visual warning notification strategies for untagged media.
+* **Prominent Red Warning for Untagged Profiles**:
+  * Both `src/_MASTER_WHISPER.ps1` and `src/whisper-asr-service-docker.ps1` now emit a high-visibility terminal warning in bright red (`-ForegroundColor Red`) whenever a file lacks a profile tag or explicit CLI parameter, clearly notifying users that the default `phone` profile and auto-detect language are being applied and recommending standard `.LL-X#` naming conventions.
+* **Graceful Zero-Speech & Silence Resilience in PowerShell Pipeline**:
+  * Replaced falsy array check `if (-not $ApiResult.segments)` with strict null checking `if ($null -eq $ApiResult.segments)` in `src/whisper-asr-service-docker.ps1`.
+  * When no active speech or segments are detected (`segments.Count -eq 0`), the engine logs a warning and generates valid blank secondary formats (`.txt`, `.srt`, `.vtt`, `.tsv`, `.NOTES.md`, `.SUMMARY.md`), preventing fatal script terminations and infinite retry loops on subsequent folder scans.
+* **Expanded Pester Regression Test Suite**:
+  * Added unit test assertions in `tests/_MASTER_WHISPER.Tests.ps1` validating that untagged files are flagged with `IsDefault = $true` while tagged filenames maintain `IsDefault = $false` (36/36 tests passing).
+
+### Changed
+* **Upstream WhisperX VAD Silence Guard (`whisperx/asr.py`)**:
+  * Patched `whisperx/asr.py` inside the Docker image `learnedmachine/whisperx-asr-service:latest` to guard against zero VAD segments (`if len(vad_segments) == 0: return {'segments': [], 'language': language}`).
+  * Resolves fatal `IndexError: list index out of range` in Transformers `Pipeline.__call__` when audio contains no detected speech under narrow bandpass filtering.
+* **Canonical Version Bump to v06.05**:
+  * Updated `$ScriptVersionNumber = "v06.05"` in `src/whisper-asr-service-docker.ps1`.
+  * Updated Comment-Based Help version metadata to `v06.05` in `src/_MASTER_WHISPER.ps1` and `src/whisper-asr-service-docker.ps1`.
+  * Updated documentation across `README.md`, `docs/ARCHITECTURE.md`, `docs/WORKFLOW_GUIDE.md`, `AGENTS.md`, and `GEMINI.md`.
+
+---
+
 ## [v06.04] - 2026-11-07
 ### Added
 * **Architecture Decision Record 0012** (`docs/adr/0012-literalpath-bracket-filename-resilience.md`):

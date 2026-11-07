@@ -250,7 +250,12 @@ v06.04
 - Universal -LiteralPath Enforcement: Replaced standard -Path with -LiteralPath across all PowerShell file provider cmdlets (Test-Path, Get-Content, Move-Item, Get-Item, Remove-Item) to eliminate bracket globbing failures on capture filenames (e.g. [DQ] [PD] Meet...).
 - Zero-Failure Processed File Verification: Fixed false "Processed audio file not found" fatal exit after successful FFmpeg audio conversion.
 - Resilient FFmpeg Logging: Fixed missing FFREPORT log file detection and movement when paths include square brackets.
-- Pester Regression Test Suite: Added test coverage for square bracket path resolution in markdown summarization checks.#>
+- Pester Regression Test Suite: Added test coverage for square bracket path resolution in markdown summarization checks.
+
+v06.05
+- High-Visibility Untagged Profile Alerts: Added bright red terminal warning notifying user when no profile tag is defined in filename and recommending standard .LL-X# conventions.
+- Upstream WhisperX VAD Silence Guard: Patched whisperx/asr.py to guard against empty VAD segments, eliminating fatal transformers pipeline IndexError: list index out of range on no-speech audio.
+- Resilient Zero-Speech PowerShell Pipeline: Replaced falsy array check with strict null checking on $ApiResult.segments; generates valid blank transcripts (.txt, .srt, .vtt, .tsv, .NOTES.md, .SUMMARY.md) to complete batch directories without infinite re-transcription loops.#>
 
 
 
@@ -870,6 +875,9 @@ if ($ExtractedParams.ProfileChar) {
         "E" { $Profile = "echoed" }
         default { $Profile = "phone" }  # Default fallback
     }
+} elseif (-not $Profile) {
+    Write-Host "WARNING: No DSP profile specified or tagged in filename '$FileName'. Defaulting to 'phone' profile. Recommended: tag filename as [name].[LL]-[X][#].[ext] (e.g. .SK-M2, .CS-P2, .EN-D1)." -ForegroundColor Red
+    $Profile = "phone"
 }
 
 # Determine speaker count from extracted params (if available)
@@ -880,7 +888,7 @@ if ($ExtractedParams.SpeakerCount) {
 
 # --- 2b. Script Version Detection ---
 
-$ScriptVersionNumber = "v06.04"
+$ScriptVersionNumber = "v06.05"
 
 $ScriptName = if ($MyInvocation.MyCommand.Path) {
     [System.IO.Path]::GetFileName($MyInvocation.MyCommand.Path)
@@ -1584,9 +1592,13 @@ if (-not (Test-Path -LiteralPath "$FullBase.json")) {
     # Show processing state
     Write-Progress -Activity "Processing Audio File" -Status "Processing transcription..." -PercentComplete 50
     
-    if (-not $ApiResult.segments) { 
-        Write-Error "Transcription returned no segments.`nResponse: $($Response | ConvertTo-Json)"
+    if ($null -eq $ApiResult.segments) { 
+        Write-Error "Transcription returned invalid response (missing segments property).`nResponse: $($Response | ConvertTo-Json)"
         exit 1
+    }
+    
+    if ($ApiResult.segments.Count -eq 0) {
+        Write-Warning "No active speech or segments detected in audio for '$FileName'. Generating empty transcript files."
     }
     
     # v04.04 - Record transcription end time immediately after successful API response, before container restart
@@ -1626,8 +1638,8 @@ if (-not (Test-Path -LiteralPath "$FullBase.json")) {
     try {
         $JsonContent = [System.IO.File]::ReadAllText("$FullBase.json", $Utf8NoBom)
         $ApiResult = $JsonContent | ConvertFrom-Json
-        if (-not $ApiResult.segments) { 
-            Write-Error "Existing JSON file has no segments. Please re-run transcription.`nResponse: $($JsonContent)"
+        if ($null -eq $ApiResult.segments) { 
+            Write-Error "Existing JSON file is invalid (missing segments property). Please re-run transcription.`nResponse: $($JsonContent)"
             exit 
         }
         $Data = $ApiResult
