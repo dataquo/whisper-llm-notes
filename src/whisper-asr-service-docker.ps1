@@ -245,7 +245,12 @@ v06.03
 - Re-calibrated Phone Profile Bandwidth: Retained distinct 200–3500 Hz telephony bandpass with `speechnorm=e=4:r=0.0001:l=1` and -16 LUFS broadcast normalization to cleanly differentiate from wideband meeting profiles.
 - Diacritic & Encoding Guard: Enhanced Clean-TranscriptText regex with unicode escape literals (\u2013\u2014) and explicit UTF-8 without BOM streams to prevent diacritic corruption on Czech and Slovak accented text.
 - Comprehensive Hardware & Service Telemetry: Extended New-TranscriptionLog to capture Docker container state, image ID, API/cuDNN versions, and lead_in_silence_seconds configuration.
-#>
+
+v06.04
+- Universal -LiteralPath Enforcement: Replaced standard -Path with -LiteralPath across all PowerShell file provider cmdlets (Test-Path, Get-Content, Move-Item, Get-Item, Remove-Item) to eliminate bracket globbing failures on capture filenames (e.g. [DQ] [PD] Meet...).
+- Zero-Failure Processed File Verification: Fixed false "Processed audio file not found" fatal exit after successful FFmpeg audio conversion.
+- Resilient FFmpeg Logging: Fixed missing FFREPORT log file detection and movement when paths include square brackets.
+- Pester Regression Test Suite: Added test coverage for square bracket path resolution in markdown summarization checks.#>
 
 
 
@@ -875,7 +880,7 @@ if ($ExtractedParams.SpeakerCount) {
 
 # --- 2b. Script Version Detection ---
 
-$ScriptVersionNumber = "v06.03"
+$ScriptVersionNumber = "v06.04"
 
 $ScriptName = if ($MyInvocation.MyCommand.Path) {
     [System.IO.Path]::GetFileName($MyInvocation.MyCommand.Path)
@@ -1131,7 +1136,7 @@ $TempProcessedFile = "$OutputDir\$BaseName.$ProcessedSuffix.$OutputFormat"
 Write-Host "Checking for existing processed file: $TempProcessedFile" -ForegroundColor Gray
 
 $ProcessedFileValid = $false
-if (Test-Path $TempProcessedFile) {
+if (Test-Path -LiteralPath $TempProcessedFile) {
     $fileItem = Get-Item -LiteralPath $TempProcessedFile -ErrorAction SilentlyContinue
     if ($fileItem -and $fileItem.Length -gt 1024) {
         $ProcessedFileValid = $true
@@ -1163,7 +1168,7 @@ if ($ProcessedFileValid) {
     $FFReportPath = Join-Path $OutputDir $LogFileName
     
     # Ensure the directory exists (in case of special character issues)
-    if (-not (Test-Path $OutputDir)) {
+    if (-not (Test-Path -LiteralPath $OutputDir)) {
         New-Item -ItemType Directory -Path $OutputDir | Out-Null
     }
     
@@ -1178,12 +1183,12 @@ if ($ProcessedFileValid) {
     }
     
     # Move FFREPORT log file to OutputDir if created in current working directory
-    if ((Test-Path $LogFileName) -and ($LogFileName -ne $FFReportPath)) {
-        Move-Item -Path $LogFileName -Destination $FFReportPath -Force -ErrorAction SilentlyContinue
+    if ((Test-Path -LiteralPath $LogFileName) -and ($LogFileName -ne $FFReportPath)) {
+        Move-Item -LiteralPath $LogFileName -Destination $FFReportPath -Force -ErrorAction SilentlyContinue
     }
 
     # Ensure FFREPORT log file was created
-    if (Test-Path $FFReportPath) {
+    if (Test-Path -LiteralPath $FFReportPath) {
         Write-Host "FFmpeg report saved: $FFReportPath" -ForegroundColor Cyan
     } else {
         Write-Warning "FFmpeg log file not found at expected location: $FFReportPath"
@@ -1224,7 +1229,7 @@ if ($AppConfig.profiles -and $AppConfig.profiles.$Profile -and $AppConfig.profil
     }
     
     $EnhancedFile = "$OutputDir\$BaseName.$ProcessedSuffix.enhanced.wav"
-    if (Test-Path $EnhancedFile) {
+    if (Test-Path -LiteralPath $EnhancedFile) {
         $enhancedItem = Get-Item -LiteralPath $EnhancedFile -ErrorAction SilentlyContinue
         if ($enhancedItem -and $enhancedItem.Length -gt 1024) {
             $TempProcessedFile = $EnhancedFile
@@ -1238,7 +1243,7 @@ if ($AppConfig.profiles -and $AppConfig.profiles.$Profile -and $AppConfig.profil
         
         & $VenvPython $EnhanceScript --input $TempProcessedFile --output $EnhancedFile --nfe $NfeVal --solver $SolverVal --tau $TauVal
         
-        if ((Test-Path $EnhancedFile) -and ((Get-Item -LiteralPath $EnhancedFile).Length -gt 1024)) {
+        if ((Test-Path -LiteralPath $EnhancedFile) -and ((Get-Item -LiteralPath $EnhancedFile).Length -gt 1024)) {
             $TempProcessedFile = $EnhancedFile
             Write-Host "Neural enhancement complete: $TempProcessedFile" -ForegroundColor Green
         } else {
@@ -1253,7 +1258,7 @@ if ($AppConfig.profiles -and $AppConfig.profiles.$Profile -and $AppConfig.profil
 if ($Config.use_wpe_dereverb) {
     Write-Host "Applying WPE statistical dereverberation (nara_wpe)..." -ForegroundColor Magenta
     $WpeOutputFile = "$OutputDir\$BaseName.$ProcessedSuffix.wpe.$OutputFormat"
-    if (Test-Path $WpeOutputFile) {
+    if (Test-Path -LiteralPath $WpeOutputFile) {
         $wpeItem = Get-Item -LiteralPath $WpeOutputFile -ErrorAction SilentlyContinue
         if ($wpeItem -and $wpeItem.Length -gt 1024) {
             $TempProcessedFile = $WpeOutputFile
@@ -1291,7 +1296,7 @@ if ($Config.use_wpe_dereverb) {
             docker exec $containerName rm -f /workspace/temp_in.audio /workspace/temp_out.audio /workspace/dereverb_wpe.py 2>$null
         }
 
-        if ((Test-Path $WpeOutputFile) -and ((Get-Item -LiteralPath $WpeOutputFile).Length -gt 1024)) {
+        if ((Test-Path -LiteralPath $WpeOutputFile) -and ((Get-Item -LiteralPath $WpeOutputFile).Length -gt 1024)) {
             $TempProcessedFile = $WpeOutputFile
             Write-Host "WPE dereverberation complete: $TempProcessedFile" -ForegroundColor Green
         } else {
@@ -1302,7 +1307,7 @@ if ($Config.use_wpe_dereverb) {
 
 
 # Check if JSON file already exists - skip to summarization if so
-if (-not (Test-Path "$FullBase.json")) {
+if (-not (Test-Path -LiteralPath "$FullBase.json")) {
 
 
     # Requesting verbose_json to get segment data for SRT/VTT/TSV with proper quoting of path
@@ -1459,7 +1464,7 @@ if (-not (Test-Path "$FullBase.json")) {
     Write-Host "Audio file for transcription: $TempProcessedFile" -ForegroundColor Green 
 
     # v04.08 - Check if the processed file exists (not original FilePath) before API call
-    if (-not (Test-Path "$TempProcessedFile")) { 
+    if (-not (Test-Path -LiteralPath "$TempProcessedFile")) { 
         Write-Error "Processed audio file not found: $TempProcessedFile"
         exit 
     }
@@ -1751,7 +1756,7 @@ Write-Host "Success! All files TXT, SRT, VTT, and TSV created in: $OutputDir" -F
 # --- 7. Calculate Performance Metrics (v04.06) ---
 # Only calculate performance metrics if actual transcription occurred
 # ($TranscriptionEndTime is only set when we go through the WhisperX API call)
-if ($TranscriptionEndTime -and $LogPath -and (Test-Path $LogPath)) {
+if ($TranscriptionEndTime -and $LogPath -and (Test-Path -LiteralPath $LogPath)) {
     # Get audio duration and calculate processing metrics
 
     # Try to get duration from API response first, otherwise calculate from segments
@@ -1809,7 +1814,7 @@ if ($TranscriptionEndTime -and $LogPath -and (Test-Path $LogPath)) {
 
 # --- 8. Remote OpenAI-Compatible API Summarization Step (LM Studio on MacBook Pro) ---
 # Only generate NOTES.md if GenerateMode includes "notes" or "both" AND file doesn't already exist
-if (-not $DisableLLM -and ($GenerateMode -eq "notes" -or $GenerateMode -eq "both") -and -not (Test-Path "$FullBase.NOTES.md")) {
+if (-not $DisableLLM -and ($GenerateMode -eq "notes" -or $GenerateMode -eq "both") -and -not (Test-Path -LiteralPath "$FullBase.NOTES.md")) {
     Write-Host "Starting to process generate detailed notes with LM Studio..." -ForegroundColor Cyan
     
     Write-Progress -Activity "Generating Detailed Notes with LM Studio" -Status "Creating NOTES.md summary..." -PercentComplete 67
@@ -1820,7 +1825,7 @@ $RemoteModel = if ($AppConfig -and $AppConfig.lm_studio_service -and $AppConfig.
 $TranscriptPath = "$FullBase.txt"
 
 # Read the transcript file content to include in the prompt
-if (Test-Path $TranscriptPath) {
+if (Test-Path -LiteralPath $TranscriptPath) {
     $TranscriptContent = [System.IO.File]::ReadAllText($TranscriptPath, $Utf8NoBom)
 } else {
     Write-Warning "Transcript file not found: $TranscriptPath. Skipping notes generation."
@@ -1934,7 +1939,7 @@ try {
 
 # --- 8b. Ollama Summarization Step (original) ---
 # Only generate SUMMARY.MD if GenerateMode includes "summary" or "both" AND file doesn't already exist
-if (-not $DisableLLM -and ($GenerateMode -eq "summary" -or $GenerateMode -eq "both") -and -not (Test-Path "$FullBase.SUMMARY.md")) {
+if (-not $DisableLLM -and ($GenerateMode -eq "summary" -or $GenerateMode -eq "both") -and -not (Test-Path -LiteralPath "$FullBase.SUMMARY.md")) {
     Write-Host "Starting to process generate summary with Ollama..." -ForegroundColor Cyan
     
     Write-Progress -Activity "Generating Summary with Ollama" -Status "Creating SUMMARY.MD summary..." -PercentComplete 68
@@ -1945,7 +1950,7 @@ $OllamaModel = if ($AppConfig -and $AppConfig.ollama_service -and $AppConfig.oll
 $TranscriptPath = "$FullBase.txt"
 
 # Read the transcript file content to include in the prompt
-if (Test-Path $TranscriptPath) {
+if (Test-Path -LiteralPath $TranscriptPath) {
     $TranscriptContent = [System.IO.File]::ReadAllText($TranscriptPath, $Utf8NoBom)
 } else {
     Write-Warning "Transcript file not found: $TranscriptPath. Skipping notes generation."
@@ -2036,7 +2041,7 @@ try {
 } else {
     if ($DisableLLM -or $GenerateMode -eq "none") {
         # LLM summarization disabled via -DisableLLMs
-    } elseif (Test-Path "$FullBase.SUMMARY.md") {
+    } elseif (Test-Path -LiteralPath "$FullBase.SUMMARY.md") {
         Write-Host "SUMMARY.md already exists, skipping..." -ForegroundColor Yellow
     }
 }
@@ -2046,8 +2051,8 @@ if ($DisableLLM -or $GenerateMode -eq "none") {
     Write-Host "LLM summarization skipped (-DisableLLMs active)." -ForegroundColor DarkGray
 } else {
     $GeneratedFiles = @()
-    if (Test-Path "$FullBase.NOTES.md") { $GeneratedFiles += "NOTES.md" }
-    if (Test-Path "$FullBase.SUMMARY.md") { $GeneratedFiles += "SUMMARY.md" }
+    if (Test-Path -LiteralPath "$FullBase.NOTES.md") { $GeneratedFiles += "NOTES.md" }
+    if (Test-Path -LiteralPath "$FullBase.SUMMARY.md") { $GeneratedFiles += "SUMMARY.md" }
     if ($GeneratedFiles.Count -gt 0) {
         Write-Host "Generated MD files: $($GeneratedFiles -join ', ')" -ForegroundColor Cyan
     }

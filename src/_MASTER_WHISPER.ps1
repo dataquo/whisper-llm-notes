@@ -75,7 +75,8 @@
     Performs only WhisperX audio transcription and secondary formats, bypassing LLM processing.
 
 .NOTES
-    Version: v06.03
+    Version: v06.04
+    - Universal -LiteralPath enforcement across all filesystem cmdlets (Test-Path, Get-Content, Get-Item) to handle bracketed [ ] filenames without wildcard globbing failures.
     - Re-calibrated Phone profile (P) to distinct narrowband bandpass (200-3500Hz) with voice leveler and 1.5s lead-in silence priming.
     - Integrated automatic sub-second timestamp compensation in execution engine.
     - Enriched Comment-Based Help with comprehensive Filename Parameter Convention, profile details, and .EXAMPLE blocks.
@@ -107,8 +108,8 @@ function Get-MissingMdFiles {
     $notesPath = "$BasePath.NOTES.md"
     $summaryPath = "$BasePath.SUMMARY.md"
     
-    $notesMissing = -not (Test-Path $notesPath)
-    $summaryMissing = -not (Test-Path $summaryPath)
+    $notesMissing = -not (Test-Path -LiteralPath $notesPath)
+    $summaryMissing = -not (Test-Path -LiteralPath $summaryPath)
     
     if ($OnlyOllama) {
         $generateMode = if ($summaryMissing) { "summary" } else { "none" }
@@ -224,7 +225,7 @@ foreach ($File in $OriginalAudioFiles) {
         foreach ($ext in @('.json', '.txt', '.srt', '.tsv', '.vtt', '.md')) {
             $CheckPath = Join-Path $File.DirectoryName "$ProcessedBaseName$ext"
             
-            if (Test-Path $CheckPath) {
+            if (Test-Path -LiteralPath $CheckPath) {
                 $NeedsProcessing = $false
                 break
             }
@@ -262,8 +263,8 @@ if ($ProcessedFiles) {
         $HasTranscript = $false
         foreach ($ext in @('.json', '.txt', '.srt', '.tsv', '.vtt', '.md')) {
             $CheckPath = Join-Path $PFile.DirectoryName "$Base$ext"
-            if (Test-Path $CheckPath) {
-                $Content = Get-Content $CheckPath -Raw -ErrorAction SilentlyContinue
+            if (Test-Path -LiteralPath $CheckPath) {
+                $Content = Get-Content -LiteralPath $CheckPath -Raw -ErrorAction SilentlyContinue
                 if (-not [string]::IsNullOrEmpty($Content)) {
                     $HasTranscript = $true
                     break
@@ -274,8 +275,8 @@ if ($ProcessedFiles) {
         if (-not $HasTranscript) {
             # Find the original audio file that would create this processed file
             $OriginalPath = $PFile.FullName -replace '\.PHONE-NORM_[^\.]+$' -replace '\.MEETING-NORM_[^\.]+$' -replace '\.DISTANT-NORM_[^\.]+$' -replace '\.HALLWAY-NORM_[^\.]+$'
-            if (Test-Path $OriginalPath) {
-                $AudioFiles += (Get-ChildItem $OriginalPath)
+            if (Test-Path -LiteralPath $OriginalPath) {
+                $AudioFiles += (Get-Item -LiteralPath $OriginalPath -ErrorAction SilentlyContinue)
             }
         }
     }
@@ -322,8 +323,8 @@ foreach ($File in $AudioFiles) {
     foreach ($ext in $NonMdExtensions) {
         $CurrentFilePath = "$($File.DirectoryName)\$($File.BaseName)$ext"
         
-        if (Test-Path $CurrentFilePath) {
-            $Content = Get-Content $CurrentFilePath -Raw -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $CurrentFilePath) {
+            $Content = Get-Content -LiteralPath $CurrentFilePath -Raw -ErrorAction SilentlyContinue
             if ([string]::IsNullOrEmpty($Content)) {
                 $AnyNonMdMissingOrEmpty = $true
                 Write-Host "  Warning: File exists but is empty: $($CurrentFilePath)" -ForegroundColor DarkYellow
@@ -359,7 +360,7 @@ foreach ($File in $AudioFiles) {
         if (-not $DisableLLM -and $MdCheck.SummaryMissing) { $MissingFiles += "SUMMARY.md" }
         if ($AnyNonMdMissingOrEmpty) {
             foreach ($ext in $NonMdExtensions) {
-                if (-not (Test-Path "$($File.DirectoryName)\$($File.BaseName)$ext")) {
+                if (-not (Test-Path -LiteralPath "$($File.DirectoryName)\$($File.BaseName)$ext")) {
                     $MissingFiles += "$ext"
                 }
             }

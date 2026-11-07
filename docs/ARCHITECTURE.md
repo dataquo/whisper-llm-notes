@@ -1,6 +1,6 @@
 # WHISPER Technical Architecture & Design
 
-This document details the end-to-end technical architecture, data processing pipeline, profile definitions, and service integrations of the **WHISPER** project (v06.03).
+This document details the end-to-end technical architecture, data processing pipeline, profile definitions, and service integrations of the **WHISPER** project (v06.04).
 
 ---
 
@@ -214,7 +214,7 @@ As documented in [ADR 0011](file:///d:/_DOCUMENTS/_SCRIPTS/WHISPER/docs/adr/0011
 ### A. Dual-Property Script Identity & Version Resolution
 The engine separates script identity from semantic versioning:
 * **`script_name`**: Automatically extracted from `$MyInvocation.MyCommand.Path` (e.g. `whisper-asr-service-docker.ps1`).
-* **`script_version`**: Evaluated via canonical constant `$ScriptVersionNumber = "v06.03"` with legacy backward compatibility if versioned script filenames (`*.vXX.YY.ps1`) are executed.
+* **`script_version`**: Evaluated via canonical constant `$ScriptVersionNumber = "v06.04"` with legacy backward compatibility if versioned script filenames (`*.vXX.YY.ps1`) are executed.
 
 ### B. Multi-Tier Container Metadata Discovery (`Get-WhisperContainerMetadata`)
 The telemetry collector enforces a resilient 3-tier inspection strategy to guarantee complete metadata capture:
@@ -235,7 +235,7 @@ flowchart TD
 
 ### C. Logging Schema & Metadata Attributes
 Every transcription generates a structured `.log` file containing:
-* **`script_name` & `script_version`**: Exact pipeline release version (`v06.03`).
+* **`script_name` & `script_version`**: Exact pipeline release version (`v06.04`).
 * **`container_information`**: Container name, image tag, image layer digest, internal API version, cuDNN version, and status.
 * **`api_parameters`**: Language code and selected model name (`large-v3`, `kinit-sk`, etc.).
 * **`configuration_parameters`**: Profile, diarization toggles, VAD thresholds, speaker bounds, lead-in silence seconds, and FFmpeg filter chains.
@@ -244,3 +244,15 @@ Every transcription generates a structured `.log` file containing:
 
 ### D. LLM Service Auditing (`.SUMMARY.md`)
 During executive summary generation via Ollama, the engine dynamically queries `GET /api/version` (guarded by a 2-second timeout) and records the running Ollama version alongside model parameters in the summary footer table.
+
+---
+
+## 8. Filesystem Path Handling & Special Character Resilience
+
+### Bracket and Globbing Immunity (`-LiteralPath`)
+In media recording and web meeting capture workflows, filenames routinely feature bracketed prefixes and identifiers (e.g. `[DQ] [PD] Meet...`). 
+
+In PowerShell, passing paths with square brackets `[` and `]` to default `-Path` parameters triggers wildcard globbing (evaluating characters inside `[...]` as character-class pattern sets). To guarantee zero false-positive file misses:
+* **Strict `-LiteralPath` Standard**: All filesystem operations (`Test-Path`, `Get-Content`, `Move-Item`, `Get-Item`, `Remove-Item`) across `_MASTER_WHISPER.ps1` and `whisper-asr-service-docker.ps1` strictly bind paths using `-LiteralPath`.
+* **Zero Input Alteration**: Original files and folders are never renamed or modified.
+* **Deterministic Interoperability**: Paths are safely passed to external binaries (`ffmpeg.exe`, `curl.exe`) via quoted arguments without PowerShell wildcard expansion.

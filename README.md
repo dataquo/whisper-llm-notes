@@ -3,7 +3,7 @@
 [![CI Pipeline](https://github.com/dataquo/WHISPER/actions/workflows/ci.yml/badge.svg)](https://github.com/dataquo/WHISPER/actions/workflows/ci.yml)
 [![PowerShell 7.0+](https://img.shields.io/badge/PowerShell-7.0%2B-blue.svg)](https://github.com/PowerShell/PowerShell)
 [![Docker](https://img.shields.io/badge/Docker-WhisperX-2496ED.svg)](https://www.docker.com/)
-[![Version](https://img.shields.io/badge/Version-v06.03-brightgreen.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-v06.04-brightgreen.svg)](CHANGELOG.md)
 
 A resilient, high-throughput batch audio transcription and AI summarization pipeline powered by **PowerShell 7+**, **FFmpeg**, **WhisperX (Docker)**, **Ollama**, and **LM Studio**.
 
@@ -32,6 +32,7 @@ A resilient, high-throughput batch audio transcription and AI summarization pipe
   * Automatically starts stopped containers and polls `/docs` or `/health` until ready.
   * Flushes GPU VRAM after each file and recovers from CUDA out-of-memory errors by restarting the configured container.
 * **Deep Configuration Layering**: Base defaults in `config.default.json` with untracked machine-specific overrides in `config.local.json`.
+* **Universal Special Character & Bracket Resilience**: Full `-LiteralPath` enforcement throughout orchestrator and execution engine, preventing PowerShell globbing failures on capture files containing brackets `[ ]` (e.g., `[DQ] [PD] Meet...`).
 * **Runtime Telemetry & Container Auditing**: Explicitly logs script identity (`script_name` & `script_version`) along with Docker container metadata (`image`, `image_id`, `api_version`, `cudnn_version`, `status`) and Ollama service versions in `.log` and `.SUMMARY.md`.
 * **Zero-Overhead Hardware Telemetry**: Collects CPU, RAM, and GPU hardware metrics via native CIM queries.
 

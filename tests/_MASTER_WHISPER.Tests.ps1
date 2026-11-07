@@ -128,6 +128,28 @@ Describe "Master Whisper Script Tests" {
             $check.SummaryMissing | Should -BeFalse
             $check.GenerateMode | Should -Be "notes"
         }
+
+        It "Correctly detects markdown files when file path contains square brackets [ ]" {
+            $bracketDir = Join-Path $env:TEMP "pester_md_bracket_[test]_$(Get-Random)"
+            New-Item -ItemType Directory -Path $bracketDir -Force | Out-Null
+            try {
+                $bracketBase = Join-Path $bracketDir "recording [DQ] [PD] Meet"
+                $check1 = Get-MissingMdFiles -BasePath $bracketBase
+                $check1.NotesMissing | Should -BeTrue
+                $check1.SummaryMissing | Should -BeTrue
+                $check1.GenerateMode | Should -Be "both"
+
+                Set-Content -LiteralPath "$bracketBase.NOTES.md" -Value "# Notes" -Encoding UTF8
+                $check2 = Get-MissingMdFiles -BasePath $bracketBase
+                $check2.NotesMissing | Should -BeFalse
+                $check2.SummaryMissing | Should -BeTrue
+                $check2.GenerateMode | Should -Be "summary"
+            } finally {
+                if (Test-Path -LiteralPath $bracketDir) {
+                    Remove-Item -LiteralPath $bracketDir -Recurse -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
     }
 
     Context "Intermediate Processed File Exclusion" {

@@ -31,11 +31,11 @@ WHISPER/
 ├── docs/
 │   ├── ARCHITECTURE.md          # End-to-end technical architecture & diagrams
 │   ├── WORKFLOW_GUIDE.md        # Operations & troubleshooting guide
-│   └── adr/                     # Architectural Decision Records (0001-0011)
+│   └── adr/                     # Architectural Decision Records (0001-0012)
 ├── .github/workflows/
 │   ├── ci.yml                   # PSScriptAnalyzer + Pester 5/6 CI pipeline
 │   └── release.yml              # Automated release packaging on tag push
-├── CHANGELOG.md                 # Full release history from v01.00 to v06.03
+├── CHANGELOG.md                 # Full release history from v01.00 to v06.04
 ├── GEMINI.md                    # Active rules (NO automatic git commits/pushes)
 └── README.md                    # Project overview & quickstart
 ```
@@ -97,7 +97,7 @@ WHISPER/
 * **Regex Encoding Safety**: All regex pattern cleaning (such as in `Clean-TranscriptText`) must use explicit unicode escape sequences (e.g. `\u2013\u2014`) rather than literal em-dashes to avoid stripping Czech/Slovak diacritics under Windows default code pages.
 
 ### E. Script Versioning & Runtime Telemetry Auditing
-* **Canonical Script Version**: Maintain explicit constant `$ScriptVersionNumber = "v06.03"` and `$ScriptName = "whisper-asr-service-docker.ps1"`. Never re-introduce filename-based versioning for scripts inside `src/`.
+* **Canonical Script Version**: Maintain explicit constant `$ScriptVersionNumber = "v06.04"` and `$ScriptName = "whisper-asr-service-docker.ps1"`. Never re-introduce filename-based versioning for scripts inside `src/`.
 * **Telemetry Logging Invariants**: Both initial logs (`New-TranscriptionLog`) and completion summaries (`Write-CompletionSummary`) must write separate `"script_name"` and `"script_version"` properties.
 * **Container Metadata Forwarding (`Get-WhisperContainerMetadata`)**: Always forward `$PipelineConfig` into container inspection so machine-level overrides (`config.local.json`) are respected. Maintain the 3-tier inspection strategy (configured Docker inspect $\to$ candidate fallback $\to$ HTTP `/openapi.json`) to guarantee zero-null telemetry logs.
 * **LLM Service Version Auditing**: When integrating LLM summarization endpoints, query `/api/version` (guarded by a $\le 2\text{s}$ timeout) and record service version rows in markdown parameter tables.
@@ -122,6 +122,9 @@ WHISPER/
 5. **Comment-Based Help (CBH) & Parameter Discoverability**:
    * All parameter additions, switches, or aliases in `src/` must maintain full Comment-Based Help (`.SYNOPSIS`, `.DESCRIPTION`, `.PARAMETER`, `.EXAMPLE`).
    * Filename tagging conventions and DSP profile additions must be mirrored in `.DESCRIPTION` so `Get-Help` and `-?` remain the single source of CLI truth.
+
+6. **Special Characters & Literal Paths**:
+   * Always use `-LiteralPath` (never positional `-Path`) on all PowerShell filesystem cmdlets (`Test-Path`, `Get-Content`, `Move-Item`, `Get-Item`, `Remove-Item`, `Set-Content`) to avoid wildcard pattern globbing failures on bracketed filenames (e.g. `[DQ] [PD] Meeting...`). See ADR 0012.
 
 ---
 

@@ -4,6 +4,22 @@ All notable changes to the WHISPER project are documented in this file. The proj
 
 ---
 
+## [v06.04] - 2026-11-07
+### Added
+* **Architecture Decision Record 0012** (`docs/adr/0012-literalpath-bracket-filename-resilience.md`):
+  * Comprehensive technical analysis of PowerShell provider wildcard globbing on bracketed filenames (`[...]`), evaluating string escaping vs. filename sanitization vs. idiomatic `-LiteralPath` enforcement.
+* **Special Character & Bracket Filename Resilience (`-LiteralPath`)**:
+  * Enforced `-LiteralPath` across all PowerShell provider cmdlets (`Test-Path`, `Get-Content`, `Move-Item`, `Get-Item`, `Remove-Item`) in `src/_MASTER_WHISPER.ps1` and `src/whisper-asr-service-docker.ps1`.
+  * Guarantees seamless handling of real-world meeting recordings containing literal brackets (e.g., `2026-11-05 [DQ] [PD] Meet...`), avoiding false "Processed audio file not found" fatal exits and missing FFmpeg log warnings.
+* **Expanded Pester Regression Test Suite**:
+  * Added unit test in `tests/_MASTER_WHISPER.Tests.ps1` validating that paths containing literal square brackets (`[ ]`) correctly detect missing and existing markdown summaries (`.NOTES.md`, `.SUMMARY.md`) via `Get-MissingMdFiles` (35/35 tests passing).
+
+### Changed
+* **Canonical Version Bump to v06.04**:
+  * Updated `$ScriptVersionNumber = "v06.04"` in `src/whisper-asr-service-docker.ps1`.
+  * Updated Comment-Based Help version metadata to `v06.04` in `src/_MASTER_WHISPER.ps1`.
+  * Updated `README.md`, `docs/ARCHITECTURE.md`, `docs/WORKFLOW_GUIDE.md`, `AGENTS.md`, and `GEMINI.md`.
+
 ## [v06.03] - 2026-09-08
 ### Added
 * **Architecture Decision Record 0011** (`docs/adr/0011-runtime-telemetry-and-container-metadata-auditing.md`):

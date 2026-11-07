@@ -17,6 +17,10 @@
 * **Deterministic Restarts**: Container lifecycle (`Ensure-WhisperContainerRunning`, `Restart-WhisperContainer`) strictly uses `$AppConfig.whisper_service.docker_container_name` and polls `/docs` or `/health` for readiness.
 
 ## 📊 Runtime Telemetry & Container Metadata Auditing
-* **Explicit Version Logging**: Maintain split `"script_name"` and `"script_version"` (`v06.03`) in all `.log` outputs; never revert to unversioned filename fallback.
+* **Explicit Version Logging**: Maintain split `"script_name"` and `"script_version"` (`v06.04`) in all `.log` outputs; never revert to unversioned filename fallback.
 * **Resilient Container Metadata**: `Get-WhisperContainerMetadata` must forward `$PipelineConfig` and use multi-tier inspection (Docker inspect $\to$ candidate scan fallback $\to$ HTTP `/openapi.json`) to guarantee zero-null telemetry logs.
+
+## 📁 Filesystem & Special Character Invariants
+* **Strict `-LiteralPath` Standard**: Always use `-LiteralPath` on all file provider cmdlets (`Test-Path`, `Get-Content`, `Move-Item`, `Get-Item`, `Remove-Item`) so brackets `[ ]` and capture tags in media filenames (e.g. `[DQ] [PD] Meet...`) are never mishandled as PowerShell wildcard patterns (ADR 0012).
+
 
