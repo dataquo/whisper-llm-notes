@@ -1,19 +1,25 @@
 # WHISPER Technical Architecture & Design
 
-This document details the end-to-end technical architecture, data processing pipeline, profile definitions, and service integrations of the **WHISPER** project (v06.05).
+This document details the end-to-end technical architecture, data processing pipeline, profile definitions, and service integrations of the **WHISPER** project (v06.06).
 
 ---
 
 ## 1. System Overview
 
-WHISPER is a modular, high-throughput batch audio transcription and AI summarization pipeline designed for Windows environments. It bridges PowerShell automation with local/remote containerized inference engines:
+WHISPER is a modular, high-throughput batch audio transcription and AI summarization pipeline designed for Windows environments. It bridges PowerShell automation with local/remote containerized inference engines and external video transcoding workflows:
 
 ```mermaid
 flowchart TD
     A["Raw Media Input\n(.m4a, .mp3, .flac, .mp4)"] --> B["_MASTER_WHISPER.ps1\n(Batch Orchestrator)"]
     
+    subgraph VideoPreProcessing["0. Optional External Video Pre-Processing"]
+        B --> B1["Invoke-DjiConversion\n(convert_DJI_videos_with_MetaData.ps1)"]
+        B1 --> B2["AV1 Transcode (CRF 44, CUDA Dec)\n(.webm with Metadata)"]
+        B2 --> B3["Duplicate Suppression\n(Exclude .webm if original .mp4 exists)"]
+    end
+
     subgraph ParameterExtraction["1. Parameter Extraction & Batch Evaluation"]
-        B --> C["Parse-FileNameParameters\n(Regex: .LL-X#)"]
+        B3 --> C["Parse-FileNameParameters\n(Strip Transcode Suffix & Match .LL-X#)"]
         C --> D["Get-MissingMdFiles\n(Check: .NOTES.md, .SUMMARY.md)"]
     end
     
@@ -62,8 +68,9 @@ flowchart TD
 The codebase enforces strict separation of concerns between batch folder iteration and single-file pipeline execution:
 
 ### A. `src/_MASTER_WHISPER.ps1` (Pure Batch Orchestrator)
-* **Folder Scanning**: Discovers original media files (`.m4a`, `.flac`, `.mp4`, `.mp3`) and excludes intermediate normalized files.
-* **Tag Parsing**: Extracts language, DSP profile, and speaker counts from filename suffixes (`file.LL-X#.ext`, supporting `P`, `M`, `D`, `H`, `E`).
+* **External Video Pre-Processing**: Invokes companion video transcode script `..\DJI\convert_DJI_videos_with_MetaData.ps1` with profile `special-quality-hw-dec-cuda` and `-checkAudioSilence "0"` prior to scanning. Configurable via `-SkipDJI` and `-DjiScriptPath`.
+* **Folder Scanning & Duplicate Suppression**: Discovers media files (`.m4a`, `.flac`, `.mp4`, `.mp3`, `.webm`), excluding intermediate normalized files and suppressing converted WebM files (`*.CRF-*_LIBSVT-AV1*.webm`) when the original source media is present.
+* **Suffix-Resilient Tag Parsing**: Normalizes transcode suffixes and extracts language, DSP profile, and speaker counts from filename tags (`file.LL-X#.ext`, supporting `P`, `M`, `D`, `H`, `E`).
 * **Missing Output Inspection**: Checks for existing `.json`, `.txt`, `.srt`, `.tsv`, `.vtt`, `.NOTES.md`, and `.SUMMARY.md` files.
 * **Targeted Dispatch**: Computes the exact `GenerateMode` (`both`, `notes`, `summary`, `none`) and honors `-OnlyOllama`, `-OnlyLMStudio`, or `-DisableLLM` flags.
 
@@ -214,7 +221,7 @@ As documented in [ADR 0011](file:///d:/_DOCUMENTS/_SCRIPTS/WHISPER/docs/adr/0011
 ### A. Dual-Property Script Identity & Version Resolution
 The engine separates script identity from semantic versioning:
 * **`script_name`**: Automatically extracted from `$MyInvocation.MyCommand.Path` (e.g. `whisper-asr-service-docker.ps1`).
-* **`script_version`**: Evaluated via canonical constant `$ScriptVersionNumber = "v06.04"` with legacy backward compatibility if versioned script filenames (`*.vXX.YY.ps1`) are executed.
+* **`script_version`**: Evaluated via canonical constant `$ScriptVersionNumber = "v06.06"` with legacy backward compatibility if versioned script filenames (`*.vXX.YY.ps1`) are executed.
 
 ### B. Multi-Tier Container Metadata Discovery (`Get-WhisperContainerMetadata`)
 The telemetry collector enforces a resilient 3-tier inspection strategy to guarantee complete metadata capture:
@@ -235,7 +242,7 @@ flowchart TD
 
 ### C. Logging Schema & Metadata Attributes
 Every transcription generates a structured `.log` file containing:
-* **`script_name` & `script_version`**: Exact pipeline release version (`v06.04`).
+* **`script_name` & `script_version`**: Exact pipeline release version (`v06.06`).
 * **`container_information`**: Container name, image tag, image layer digest, internal API version, cuDNN version, and status.
 * **`api_parameters`**: Language code and selected model name (`large-v3`, `kinit-sk`, etc.).
 * **`configuration_parameters`**: Profile, diarization toggles, VAD thresholds, speaker bounds, lead-in silence seconds, and FFmpeg filter chains.
@@ -256,3 +263,26 @@ In PowerShell, passing paths with square brackets `[` and `]` to default `-Path`
 * **Strict `-LiteralPath` Standard**: All filesystem operations (`Test-Path`, `Get-Content`, `Move-Item`, `Get-Item`, `Remove-Item`) across `_MASTER_WHISPER.ps1` and `whisper-asr-service-docker.ps1` strictly bind paths using `-LiteralPath`.
 * **Zero Input Alteration**: Original files and folders are never renamed or modified.
 * **Deterministic Interoperability**: Paths are safely passed to external binaries (`ffmpeg.exe`, `curl.exe`) via quoted arguments without PowerShell wildcard expansion.
+
+---
+
+## 9. External Video Pre-Processing Orchestration (DJI AV1 Transcoding)
+
+To support complete ingestion of hardware video captures (e.g. DJI Osmo Pocket, Action cameras, drones, screen recordings) alongside audio transcription, `_MASTER_WHISPER.ps1` integrates external pre-processing via `..\DJI\convert_DJI_videos_with_MetaData.ps1`:
+
+### A. Pre-Processing Execution Contract
+1. **Dynamic Resolution**: `Get-DjiScriptPath` locates the script across repository parent directories and execution roots.
+2. **Preset Invocation**: Invokes `& $resolvedScript -sourceFolder $InputFolder -scene "special-quality-hw-dec-cuda" -checkAudioSilence "0"`.
+   - Offloads video decode to GPU via `-hwaccel cuda`.
+   - Encodes high-efficiency AV1 video with SVT-AV1 preset 2 (`CRF 44`) and Opus audio.
+   - Retains full audio duration by disabling silence cutoff trimming (`-checkAudioSilence "0"`).
+3. **CLI Control**: Can be bypassed on demand using `-SkipDJI` (aliases: `-NoDJI`, `-SkipDJIConversion`).
+
+### B. Transcode Suffix Normalization & Duplicate Suppression
+When video conversion completes, each `.mp4` generates a companion WebM file:
+```text
+<BaseName>.CRF-<crf>_<parametersVideoSufix>_<resolution>.webm
+```
+* **Duplicate Suppression**: `_MASTER_WHISPER.ps1` scans the folder and identifies files matching `(\.CRF-\d+|_CRF\d+|[\._]LIBSVT-AV1)`. If an original source media file (`.mp4`, `.mov`, `.m4a`, `.flac`, `.mp3`) with the matching base name is present, the `.webm` transcode is excluded from audio candidate queues, eliminating redundant processing.
+* **Tag Preservation**: If the original source media is absent (e.g. user moved or purged 4K originals), `Parse-FileNameParameters` strips transcode metadata before regex evaluation, ensuring parameter tags (`.SK-M2`, `.EN-M1`) correctly configure language, DSP profile, and speaker counts.
+

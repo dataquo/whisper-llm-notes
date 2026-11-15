@@ -40,6 +40,15 @@
       hall_lecture.EN-D1.flac   -> English, Distant profile, 1 speaker
       voice_note.m4a            -> Default: Phone profile, Auto language, 2 speakers
 
+    -----------------------------------------------------------------------------
+    PRE-PROCESSING / EXTERNAL INTEGRATIONS:
+    -----------------------------------------------------------------------------
+    Before audio scanning and transcription, the orchestrator checks for the DJI video
+    conversion script ('..\DJI\convert_DJI_videos_with_MetaData.ps1'). If present, it invokes
+    it with profile 'special-quality-hw-dec-cuda' and silence detection disabled ('0') on the
+    target input directory to transcode DJI recordings with metadata prior to ASR.
+    This step can be bypassed with the -SkipDJI switch.
+
 .PARAMETER InputFolder
     Path to the directory containing audio recordings. Defaults to '.' (current working directory).
 
@@ -58,9 +67,22 @@
     When specified (aliases: -LMStudioOnly, -OnlyLM), generates ONLY LM Studio structured
     meeting notes (.NOTES.md) and skips Ollama executive summaries.
 
+.PARAMETER SkipDJI
+    When specified (aliases: -NoDJI, -SkipDJIConversion), skips the preliminary DJI video
+    conversion step (..\DJI\convert_DJI_videos_with_MetaData.ps1) and proceeds directly to
+    audio scanning and transcription.
+
+.PARAMETER DjiScriptPath
+    Optional explicit path to the DJI video conversion script (convert_DJI_videos_with_MetaData.ps1).
+    Defaults to candidate resolution at '..\DJI\convert_DJI_videos_with_MetaData.ps1'.
+
 .EXAMPLE
     .\_MASTER_WHISPER.ps1 -InputFolder "D:\Recordings"
-    Scans 'D:\Recordings' and runs full pipeline (ASR + LM Studio notes + Ollama summary) for all pending files.
+    Scans 'D:\Recordings', executes DJI video conversion if script is present, and runs full pipeline (ASR + LM Studio notes + Ollama summary) for all pending files.
+
+.EXAMPLE
+    .\_MASTER_WHISPER.ps1 -InputFolder "D:\Recordings" -SkipDJI
+    Scans 'D:\Recordings' and transcribes audio, skipping the preliminary DJI video conversion step.
 
 .EXAMPLE
     .\_MASTER_WHISPER.ps1 -OnlyOllama
@@ -75,7 +97,11 @@
     Performs only WhisperX audio transcription and secondary formats, bypassing LLM processing.
 
 .NOTES
-    Version: v06.05
+    Version: v06.06
+    - Integrated external DJI video conversion invocation (..\DJI\convert_DJI_videos_with_MetaData.ps1) using profile 'special-quality-hw-dec-cuda' without audio silence detection.
+    - Added -SkipDJI and -DjiScriptPath parameters for flexible external video transcoding orchestration.
+    - Added duplicate suppression for converted DJI WebM files (*.CRF-*_LIBSVT-AV1*.webm) when original source media exists.
+    - Enhanced Parse-FileNameParameters to strip video conversion suffixes (.CRF-44_LIBSVT-AV1...) ensuring reliable tag extraction.
     - High-visibility untagged profile alerts in bright red notifying users when recordings lack .LL-X# tagging.
     - Zero-speech resilience allowing blank transcripts to be safely generated without crashing pipeline batch loops.
     - Universal -LiteralPath enforcement across all filesystem cmdlets (Test-Path, Get-Content, Get-Item) to handle bracketed [ ] filenames without wildcard globbing failures.
@@ -96,7 +122,10 @@ param(
     [Alias("OnlyOlama", "OllamaOnly")]
     [switch]$OnlyOllama,
     [Alias("LMStudioOnly", "OnlyLM")]
-    [switch]$OnlyLMStudio
+    [switch]$OnlyLMStudio,
+    [Alias("NoDJI", "SkipDJIConversion")]
+    [switch]$SkipDJI,
+    [string]$DjiScriptPath = $null
 )
 
 # Helper function to determine which MD files need generation
@@ -150,13 +179,16 @@ function Get-MissingMdFiles {
 function Parse-FileNameParameters {
     param([string]$FileName)
     
+    # Strip any DJI video conversion suffixes (e.g., .CRF-44_LIBSVT-AV1...) before checking tag pattern
+    $EffectiveFileName = $FileName -replace '(\.CRF-\d+|_CRF\d+|[\._]LIBSVT-AV1)[^\.]*(\.[^.]+)$', '$2'
+    
     # Pattern: file_name.LL-X#.EXT where:
     # - LL = language code (2 letters, case-insensitive)
     # - X = profile letter (P=phone, M=meeting, D=distant, H=hallway, E=echoed)
     # - # = speaker number
     $Pattern = '^(.+)\.([A-Z]{2})-([PMDHE])(\d+)\.[^.]+$'
     
-    if ($FileName -match $Pattern) {
+    if ($EffectiveFileName -match $Pattern) {
         $LanguageCode = $matches[2].ToLower()  # Convert to lowercase: CS→cs, SK→sk, EN→en
         $ProfileLetter = $matches[3]
         $SpeakerNumber = [int]$matches[4]
@@ -198,18 +230,113 @@ function Parse-FileNameParameters {
     }
 }
 
-# Define supported audio extensions (m4a, mp3, flac, mp4)
-$AudioExtensions = @(".m4a", ".flac", ".mp4", ".mp3")
+# Helper function to locate DJI video conversion script
+function Get-DjiScriptPath {
+    param(
+        [string]$ExplicitPath = $null
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($ExplicitPath)) {
+        if (Test-Path -LiteralPath $ExplicitPath) {
+            return (Get-Item -LiteralPath $ExplicitPath).FullName
+        }
+        return $null
+    }
+
+    $candidatePaths = @()
+    if ($PSScriptRoot) {
+        $candidatePaths += (Join-Path (Split-Path $PSScriptRoot -Parent) "..\DJI\convert_DJI_videos_with_MetaData.ps1")
+        $candidatePaths += (Join-Path $PSScriptRoot "..\..\DJI\convert_DJI_videos_with_MetaData.ps1")
+    }
+    $candidatePaths += (Join-Path (Get-Location) "..\DJI\convert_DJI_videos_with_MetaData.ps1")
+    $candidatePaths += "..\DJI\convert_DJI_videos_with_MetaData.ps1"
+
+    foreach ($cand in $candidatePaths) {
+        if (Test-Path -LiteralPath $cand) {
+            return (Get-Item -LiteralPath $cand).FullName
+        }
+    }
+
+    return $null
+}
+
+# Helper function to invoke DJI video conversion
+function Invoke-DjiConversion {
+    param(
+        [string]$TargetFolder,
+        [string]$ExplicitScriptPath = $null,
+        [switch]$Skip
+    )
+
+    if ($Skip) {
+        Write-Host "DJI video conversion skipped (-SkipDJI specified)." -ForegroundColor DarkGray
+        return $false
+    }
+
+    $resolvedScript = Get-DjiScriptPath -ExplicitPath $ExplicitScriptPath
+    if (-not $resolvedScript) {
+        if (-not [string]::IsNullOrWhiteSpace($ExplicitScriptPath)) {
+            Write-Warning "Specified DJI script path was not found: $ExplicitScriptPath"
+        } else {
+            Write-Host "DJI video conversion script not found at ..\DJI\convert_DJI_videos_with_MetaData.ps1 - skipping conversion." -ForegroundColor DarkGray
+        }
+        return $false
+    }
+
+    $resolvedFolder = if (Test-Path -LiteralPath $TargetFolder) {
+        (Convert-Path -LiteralPath $TargetFolder)
+    } else {
+        $TargetFolder
+    }
+
+    Write-Host "================ DJI Video Conversion ================" -ForegroundColor Cyan
+    Write-Host "Invoking: $resolvedScript" -ForegroundColor Gray
+    Write-Host "Source Folder: $resolvedFolder" -ForegroundColor Gray
+    Write-Host "Profile (Scene): special-quality-hw-dec-cuda" -ForegroundColor Gray
+    Write-Host "Audio Silence Detection: disabled (0)" -ForegroundColor Gray
+
+    try {
+        & $resolvedScript -sourceFolder $resolvedFolder -scene "special-quality-hw-dec-cuda" -checkAudioSilence "0"
+        Write-Host "--- DJI Video Conversion Complete ---" -ForegroundColor Cyan
+        return $true
+    } catch {
+        Write-Error "Error during DJI video conversion: $_"
+        return $false
+    }
+}
+
+# Define supported audio extensions (m4a, mp3, flac, mp4, webm)
+$AudioExtensions = @(".m4a", ".flac", ".mp4", ".mp3", ".webm")
 
 Write-Host "=============== Master Whisper Script ===============" -ForegroundColor Cyan
 Write-Host "Scanning folder: $InputFolder" -ForegroundColor Yellow
 
-# Get files from top-level only (non-recursive) that need processing
+# Step 1: Pre-process DJI videos with external script if available
+Invoke-DjiConversion -TargetFolder $InputFolder -ExplicitScriptPath $DjiScriptPath -Skip:$SkipDJI
+
+# Step 2: Get files from top-level only (non-recursive) that need processing
 $AudioFiles = @()
 
-# Check for original audio files (.m4a, .flac, .mp4, .mp3), excluding already-normalized intermediate files
+# Check for original audio files (.m4a, .flac, .mp4, .mp3, .webm), excluding normalized intermediate files
+# and duplicate converted DJI WebM files when original source media is present
 $OriginalAudioFiles = Get-ChildItem -Path $InputFolder -File -ErrorAction SilentlyContinue | Where-Object {
-    $_.Extension.ToLower() -in $AudioExtensions -and $_.Name -notmatch '\.(PHONE-NORM_|MEETING-NORM_|DISTANT-NORM_|HALLWAY-NORM_|ECHOED-NORM_)'
+    if ($_.Extension.ToLower() -notin $AudioExtensions) { return $false }
+    if ($_.Name -match '\.(PHONE-NORM_|MEETING-NORM_|DISTANT-NORM_|HALLWAY-NORM_|ECHOED-NORM_)') { return $false }
+
+    if ($_.Name -match '(\.CRF-\d+|_CRF\d+|[\._]LIBSVT-AV1)') {
+        $baseWithoutDjiSuffix = $_.Name -replace '(\.CRF-\d+|_CRF\d+|[\._]LIBSVT-AV1).*$', ''
+        $hasOriginalMedia = $false
+        foreach ($candExt in @(".mp4", ".mov", ".m4a", ".flac", ".mp3", ".webm")) {
+            $candPath = Join-Path $_.DirectoryName "$baseWithoutDjiSuffix$candExt"
+            if ($candPath -ne $_.FullName -and (Test-Path -LiteralPath $candPath)) {
+                $hasOriginalMedia = $true
+                break
+            }
+        }
+        if ($hasOriginalMedia) { return $false }
+    }
+
+    return $true
 }
 
 if (-not $OriginalAudioFiles) {

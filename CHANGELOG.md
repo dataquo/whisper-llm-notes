@@ -4,6 +4,28 @@ All notable changes to the WHISPER project are documented in this file. The proj
 
 ---
 
+## [v06.06] - 2026-11-15
+### Added
+* **Architecture Decision Record 0014** (`docs/adr/0014-dji-video-conversion-orchestration-and-duplicate-suppression.md`):
+  * Architectural documentation covering external companion script orchestration, candidate resolution across parent execution directories, transcode suffix normalization, and duplicate media suppression.
+* **External DJI Video Pre-Processing Orchestration**:
+  * `_MASTER_WHISPER.ps1` dynamically resolves `..\DJI\convert_DJI_videos_with_MetaData.ps1` via `Get-DjiScriptPath` and executes `Invoke-DjiConversion` with profile `special-quality-hw-dec-cuda` and `-checkAudioSilence "0"` prior to scanning.
+  * Added `-SkipDJI` (aliases: `-NoDJI`, `-SkipDJIConversion`) switch and optional `-DjiScriptPath` parameter to bypass or customize video conversion.
+* **Converted Media Duplicate Suppression**:
+  * Implemented smart suppression for converted WebM video transcodes matching `(\.CRF-\d+|_CRF\d+|[\._]LIBSVT-AV1)` when source media (`.mp4`, `.mov`, `.m4a`, etc.) exists in the directory, preventing duplicate ASR and LLM processing.
+* **Suffix-Resilient Parameter Extraction**:
+  * Enhanced `Parse-FileNameParameters` to strip video transcode metadata (`.CRF-44_LIBSVT-AV1_...`) before evaluating the `.LL-X#` naming convention, ensuring standalone converted WebMs accurately preserve language, profile, and speaker counts.
+* **Expanded Pester Regression Test Suite**:
+  * Added unit test coverage in `tests/_MASTER_WHISPER.Tests.ps1` validating candidate script resolution, `-SkipDJI` behavior, argument passing (`-scene "special-quality-hw-dec-cuda"` and `-checkAudioSilence "0"`), duplicate WebM suppression with real-world capture filenames, and tag extraction from transcode outputs (43/43 tests passing).
+
+### Changed
+* **Canonical Version Bump to v06.06**:
+  * Updated `$ScriptVersionNumber = "v06.06"` in `src/whisper-asr-service-docker.ps1`.
+  * Updated Comment-Based Help version metadata to `v06.06` in `src/_MASTER_WHISPER.ps1` and `src/whisper-asr-service-docker.ps1`.
+  * Updated documentation across `README.md`, `docs/ARCHITECTURE.md`, `docs/WORKFLOW_GUIDE.md`, `AGENTS.md`, and `GEMINI.md`.
+
+---
+
 ## [v06.05] - 2026-11-07
 ### Added
 * **Architecture Decision Record 0013** (`docs/adr/0013-empty-speech-vad-silence-and-untagged-profile-alerts.md`):

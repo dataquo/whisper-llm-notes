@@ -255,7 +255,12 @@ v06.04
 v06.05
 - High-Visibility Untagged Profile Alerts: Added bright red terminal warning notifying user when no profile tag is defined in filename and recommending standard .LL-X# conventions.
 - Upstream WhisperX VAD Silence Guard: Patched whisperx/asr.py to guard against empty VAD segments, eliminating fatal transformers pipeline IndexError: list index out of range on no-speech audio.
-- Resilient Zero-Speech PowerShell Pipeline: Replaced falsy array check with strict null checking on $ApiResult.segments; generates valid blank transcripts (.txt, .srt, .vtt, .tsv, .NOTES.md, .SUMMARY.md) to complete batch directories without infinite re-transcription loops.#>
+- Resilient Zero-Speech PowerShell Pipeline: Replaced falsy array check with strict null checking on $ApiResult.segments; generates valid blank transcripts (.txt, .srt, .vtt, .tsv, .NOTES.md, .SUMMARY.md) to complete batch directories without infinite re-transcription loops.
+
+v06.06
+- External DJI Video Conversion Integration: Master orchestrator invokes ..\DJI\convert_DJI_videos_with_MetaData.ps1 prior to ASR with profile 'special-quality-hw-dec-cuda' and silence detection disabled ('0').
+- Converted Media Duplicate Suppression: Automatically excludes converted WebM files (*.CRF-*_LIBSVT-AV1*.webm) from transcription when original source media (.mp4, .mov, .m4a) exists in directory.
+- Suffix-Resilient Parameter Parsing: Normalizes filenames containing video transcode metadata (.CRF-44_LIBSVT-AV1...) to ensure accurate profile and speaker extraction even when converted WebM files are processed standalone.#>
 
 
 
@@ -888,7 +893,7 @@ if ($ExtractedParams.SpeakerCount) {
 
 # --- 2b. Script Version Detection ---
 
-$ScriptVersionNumber = "v06.05"
+$ScriptVersionNumber = "v06.06"
 
 $ScriptName = if ($MyInvocation.MyCommand.Path) {
     [System.IO.Path]::GetFileName($MyInvocation.MyCommand.Path)

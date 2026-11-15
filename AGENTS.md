@@ -31,11 +31,11 @@ WHISPER/
 ├── docs/
 │   ├── ARCHITECTURE.md          # End-to-end technical architecture & diagrams
 │   ├── WORKFLOW_GUIDE.md        # Operations & troubleshooting guide
-│   └── adr/                     # Architectural Decision Records (0001-0013)
+│   └── adr/                     # Architectural Decision Records (0001-0014)
 ├── .github/workflows/
 │   ├── ci.yml                   # PSScriptAnalyzer + Pester 5/6 CI pipeline
 │   └── release.yml              # Automated release packaging on tag push
-├── CHANGELOG.md                 # Full release history from v01.00 to v06.05
+├── CHANGELOG.md                 # Full release history from v01.00 to v06.06
 ├── GEMINI.md                    # Active rules (NO automatic git commits/pushes)
 └── README.md                    # Project overview & quickstart
 ```
@@ -57,12 +57,14 @@ WHISPER/
 ### A. Clean Architectural Decoupling
 * **`src/_MASTER_WHISPER.ps1` (Pure Batch Orchestrator)**:
   * Responsible **ONLY** for:
-    1. Scanning input directories for media files (`.m4a`, `.flac`, `.mp4`, `.mp3`).
-    2. Extracting parameters from filename conventions (`.LL-X#`).
-    3. Checking which transcript/summary files (`.json`, `.txt`, `.srt`, `.tsv`, `.vtt`, `.NOTES.md`, `.SUMMARY.md`) are missing or empty.
-    4. Passing parameters and delegating execution to `whisper-asr-service-docker.ps1`.
-  * Supports selective generation flags: `-OnlyOllama`, `-OnlyLMStudio`, `-DisableLLM`.
-  * **Rule**: NEVER add Docker commands, container health checks, FFmpeg execution, or configuration loading into `_MASTER_WHISPER.ps1`. Keep it clean and lightweight (~220 lines).
+    1. Scanning input directories for media files (`.m4a`, `.flac`, `.mp4`, `.mp3`, `.webm`).
+    2. Orchestrating external video pre-processing (`..\DJI\convert_DJI_videos_with_MetaData.ps1`) via `Get-DjiScriptPath` and `Invoke-DjiConversion`.
+    3. Suppressing duplicate converted video outputs (`*.CRF-*_LIBSVT-AV1*.webm`) when original source media exists.
+    4. Extracting parameters from filename conventions (`.LL-X#`), with transcode suffix normalization.
+    5. Checking which transcript/summary files (`.json`, `.txt`, `.srt`, `.tsv`, `.vtt`, `.NOTES.md`, `.SUMMARY.md`) are missing or empty.
+    6. Passing parameters and delegating execution to `whisper-asr-service-docker.ps1`.
+  * Supports selective generation flags: `-OnlyOllama`, `-OnlyLMStudio`, `-DisableLLM`, `-SkipDJI`.
+  * **Rule**: NEVER add Docker commands, container health checks, FFmpeg execution, or configuration loading into `_MASTER_WHISPER.ps1`. External script execution must be strictly delegated via candidate resolution and guarded by bypass switches. Keep it clean and lightweight.
 * **`src/whisper-asr-service-docker.ps1` (Self-Contained Execution Engine)**:
   * Responsible for all single-file processing:
     1. Loading and layering configuration (`Get-PipelineConfig`).
@@ -97,7 +99,7 @@ WHISPER/
 * **Regex Encoding Safety**: All regex pattern cleaning (such as in `Clean-TranscriptText`) must use explicit unicode escape sequences (e.g. `\u2013\u2014`) rather than literal em-dashes to avoid stripping Czech/Slovak diacritics under Windows default code pages.
 
 ### E. Script Versioning & Runtime Telemetry Auditing
-* **Canonical Script Version**: Maintain explicit constant `$ScriptVersionNumber = "v06.05"` and `$ScriptName = "whisper-asr-service-docker.ps1"`. Never re-introduce filename-based versioning for scripts inside `src/`.
+* **Canonical Script Version**: Maintain explicit constant `$ScriptVersionNumber = "v06.06"` and `$ScriptName = "whisper-asr-service-docker.ps1"`. Never re-introduce filename-based versioning for scripts inside `src/`.
 * **Telemetry Logging Invariants**: Both initial logs (`New-TranscriptionLog`) and completion summaries (`Write-CompletionSummary`) must write separate `"script_name"` and `"script_version"` properties.
 * **Container Metadata Forwarding (`Get-WhisperContainerMetadata`)**: Always forward `$PipelineConfig` into container inspection so machine-level overrides (`config.local.json`) are respected. Maintain the 3-tier inspection strategy (configured Docker inspect $\to$ candidate fallback $\to$ HTTP `/openapi.json`) to guarantee zero-null telemetry logs.
 * **LLM Service Version Auditing**: When integrating LLM summarization endpoints, query `/api/version` (guarded by a $\le 2\text{s}$ timeout) and record service version rows in markdown parameter tables.

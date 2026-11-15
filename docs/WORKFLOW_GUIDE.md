@@ -1,6 +1,6 @@
 # WHISPER Operational Runbook & Workflow Guide
 
-This guide provides practical instructions for daily operations, troubleshooting, testing, and developing within the **WHISPER** repository (v06.05).
+This guide provides practical instructions for daily operations, troubleshooting, testing, and developing within the **WHISPER** repository (v06.06).
 
 ---
 
@@ -25,12 +25,26 @@ Get-Help .\src\_MASTER_WHISPER.ps1 -Examples
 ### Batch Processing a Directory
 To transcribe all pending recordings in a folder:
 ```powershell
-# Run from repository root
+# Run from repository root (automatically triggers DJI video pre-processing if available)
 pwsh -File .\src\_MASTER_WHISPER.ps1 -InputFolder "D:\Recordings\2026-August"
 ```
 
+* The script automatically invokes `..\DJI\convert_DJI_videos_with_MetaData.ps1` with profile `special-quality-hw-dec-cuda` and `-checkAudioSilence "0"` prior to scanning.
 * The script automatically skips any audio file whose transcripts (`.json`, `.txt`, `.srt`, `.tsv`, `.vtt`, `.NOTES.md`, `.SUMMARY.md`) already exist and are non-empty.
+* Converted WebM files (`*.CRF-*_LIBSVT-AV1*.webm`) are automatically suppressed if original source media is present.
 * If only markdown notes are missing, it selectively runs LLM inference without re-running audio transcription.
+
+### Video Pre-Processing Controls
+* **Skip Video Pre-Conversion**:
+  ```powershell
+  pwsh -File .\src\_MASTER_WHISPER.ps1 -InputFolder "D:\Recordings" -SkipDJI
+  ```
+  *(Aliases: `-SkipDJI`, `-NoDJI`, `-SkipDJIConversion`)*
+
+* **Custom DJI Conversion Script Path**:
+  ```powershell
+  pwsh -File .\src\_MASTER_WHISPER.ps1 -InputFolder "D:\Recordings" -DjiScriptPath "C:\Tools\convert_DJI_videos_with_MetaData.ps1"
+  ```
 
 ### Selective LLM Execution Switches
 * **Only Ollama Summary (`.SUMMARY.md`)**:

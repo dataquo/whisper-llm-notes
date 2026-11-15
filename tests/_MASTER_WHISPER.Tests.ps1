@@ -18,6 +18,18 @@ Describe "Master Whisper Script Tests" {
             $fnBody = "function global:Parse-FileNameParameters { $($Matches[1])"
             . ([ScriptBlock]::Create($fnBody))
         }
+
+        # Extract Get-DjiScriptPath function definition and inject into global scope
+        if ($ScriptContent -match '(?ms)function Get-DjiScriptPath\s*\{(.+?^\})') {
+            $fnBody = "function global:Get-DjiScriptPath { $($Matches[1])"
+            . ([ScriptBlock]::Create($fnBody))
+        }
+
+        # Extract Invoke-DjiConversion function definition and inject into global scope
+        if ($ScriptContent -match '(?ms)function Invoke-DjiConversion\s*\{(.+?^\})') {
+            $fnBody = "function global:Invoke-DjiConversion { $($Matches[1])"
+            . ([ScriptBlock]::Create($fnBody))
+        }
     }
 
     Context "Filename Parameter Parsing (file.LL-X#.ext)" {
@@ -190,6 +202,139 @@ Describe "Master Whisper Script Tests" {
 
             $GenerateMode = if ($DisableLLM) { "none" } else { $MdCheck.GenerateMode }
             $GenerateMode | Should -Be "none"
+        }
+    }
+
+    Context "DJI Video Conversion Integration" {
+        BeforeEach {
+            $TestDjiDir = Join-Path $env:TEMP "pester_dji_test_$(Get-Random)"
+            New-Item -ItemType Directory -Path $TestDjiDir -Force | Out-Null
+        }
+
+        AfterEach {
+            if ($TestDjiDir -and (Test-Path -LiteralPath $TestDjiDir)) {
+                Remove-Item -LiteralPath $TestDjiDir -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+
+        It "Resolves explicit DJI script path when provided and valid" {
+            $dummyScript = Join-Path $TestDjiDir "dummy_dji.ps1"
+            Set-Content -LiteralPath $dummyScript -Value 'Write-Host "Dummy DJI"' -Encoding UTF8
+            $resolved = Get-DjiScriptPath -ExplicitPath $dummyScript
+            $resolved | Should -Be (Get-Item -LiteralPath $dummyScript).FullName
+        }
+
+        It "Returns null when explicit DJI script path does not exist" {
+            $nonExistent = Join-Path $TestDjiDir "non_existent.ps1"
+            $resolved = Get-DjiScriptPath -ExplicitPath $nonExistent
+            $resolved | Should -BeNullOrEmpty
+        }
+
+        It "Skips conversion when -Skip switch is enabled" {
+            $ran = Invoke-DjiConversion -TargetFolder $TestDjiDir -Skip
+            $ran | Should -BeFalse
+        }
+
+        It "Invokes DJI script with expected scene and silence parameters" {
+            $mockDjiScript = Join-Path $TestDjiDir "mock_dji.ps1"
+            $paramLog = Join-Path $TestDjiDir "params.log"
+            $scriptContent = @"
+Param(
+    [string]`$sourceFolder,
+    [string]`$scene,
+    [string]`$checkAudioSilence
+)
+"sourceFolder=`$sourceFolder|scene=`$scene|checkAudioSilence=`$checkAudioSilence" | Out-File -FilePath "$paramLog" -Encoding UTF8
+"@
+            Set-Content -LiteralPath $mockDjiScript -Value $scriptContent -Encoding UTF8
+            $success = Invoke-DjiConversion -TargetFolder $TestDjiDir -ExplicitScriptPath $mockDjiScript
+            $success | Should -BeTrue
+            Test-Path -LiteralPath $paramLog | Should -BeTrue
+            $loggedParams = Get-Content -LiteralPath $paramLog -Raw
+            $loggedParams | Should -Match "scene=special-quality-hw-dec-cuda"
+            $loggedParams | Should -Match "checkAudioSilence=0"
+        }
+    }
+
+    Context "Converted DJI WebM Duplicate Exclusion" {
+        BeforeEach {
+            $TestMediaDir = Join-Path $env:TEMP "pester_media_test_$(Get-Random)"
+            New-Item -ItemType Directory -Path $TestMediaDir -Force | Out-Null
+        }
+
+        AfterEach {
+            if ($TestMediaDir -and (Test-Path -LiteralPath $TestMediaDir)) {
+                Remove-Item -LiteralPath $TestMediaDir -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+
+        It "Excludes converted WebM file when original source MP4 exists" {
+            $mp4File = Join-Path $TestMediaDir "2026-10-10 PerDiemoEU.EN-M1.mp4"
+            $webmFile = Join-Path $TestMediaDir "2026-10-10 PerDiemoEU.EN-M1.CRF-44_LIBSVT-AV1_P2_SO_HW-DEC-CUDA_5120x1440.webm"
+            Set-Content -LiteralPath $mp4File -Value "dummy" -Encoding UTF8
+            Set-Content -LiteralPath $webmFile -Value "dummy" -Encoding UTF8
+
+            $audioExtensions = @(".m4a", ".flac", ".mp4", ".mp3", ".webm")
+            $items = Get-ChildItem -LiteralPath $TestMediaDir -File | Where-Object {
+                if ($_.Extension.ToLower() -notin $audioExtensions) { return $false }
+                if ($_.Name -match '\.(PHONE-NORM_|MEETING-NORM_|DISTANT-NORM_|HALLWAY-NORM_|ECHOED-NORM_)') { return $false }
+
+                if ($_.Name -match '(\.CRF-\d+|_CRF\d+|[\._]LIBSVT-AV1)') {
+                    $baseWithoutDjiSuffix = $_.Name -replace '(\.CRF-\d+|_CRF\d+|[\._]LIBSVT-AV1).*$', ''
+                    $hasOriginalMedia = $false
+                    foreach ($candExt in @(".mp4", ".mov", ".m4a", ".flac", ".mp3", ".webm")) {
+                        $candPath = Join-Path $_.DirectoryName "$baseWithoutDjiSuffix$candExt"
+                        if ($candPath -ne $_.FullName -and (Test-Path -LiteralPath $candPath)) {
+                            $hasOriginalMedia = $true
+                            break
+                        }
+                    }
+                    if ($hasOriginalMedia) { return $false }
+                }
+
+                return $true
+            }
+
+            $items.Count | Should -Be 1
+            $items[0].Name | Should -Be "2026-10-10 PerDiemoEU.EN-M1.mp4"
+        }
+
+        It "Retains converted WebM file when original source MP4 does not exist" {
+            $webmFile = Join-Path $TestMediaDir "2026-10-10 PerDiemoEU.EN-M1.CRF-44_LIBSVT-AV1_P2_SO_HW-DEC-CUDA_5120x1440.webm"
+            Set-Content -LiteralPath $webmFile -Value "dummy" -Encoding UTF8
+
+            $audioExtensions = @(".m4a", ".flac", ".mp4", ".mp3", ".webm")
+            $items = Get-ChildItem -LiteralPath $TestMediaDir -File | Where-Object {
+                if ($_.Extension.ToLower() -notin $audioExtensions) { return $false }
+                if ($_.Name -match '\.(PHONE-NORM_|MEETING-NORM_|DISTANT-NORM_|HALLWAY-NORM_|ECHOED-NORM_)') { return $false }
+
+                if ($_.Name -match '(\.CRF-\d+|_CRF\d+|[\._]LIBSVT-AV1)') {
+                    $baseWithoutDjiSuffix = $_.Name -replace '(\.CRF-\d+|_CRF\d+|[\._]LIBSVT-AV1).*$', ''
+                    $hasOriginalMedia = $false
+                    foreach ($candExt in @(".mp4", ".mov", ".m4a", ".flac", ".mp3", ".webm")) {
+                        $candPath = Join-Path $_.DirectoryName "$baseWithoutDjiSuffix$candExt"
+                        if ($candPath -ne $_.FullName -and (Test-Path -LiteralPath $candPath)) {
+                            $hasOriginalMedia = $true
+                            break
+                        }
+                    }
+                    if ($hasOriginalMedia) { return $false }
+                }
+
+                return $true
+            }
+
+            $items.Count | Should -Be 1
+            $items[0].Name | Should -Be "2026-10-10 PerDiemoEU.EN-M1.CRF-44_LIBSVT-AV1_P2_SO_HW-DEC-CUDA_5120x1440.webm"
+        }
+
+        It "Extracts filename parameters correctly from converted WebM when original does not exist" {
+            $result = Parse-FileNameParameters -FileName "2026-10-10 PerDiemoEU.EN-M1.CRF-44_LIBSVT-AV1_P2_SO_HW-DEC-CUDA_5120x1440.webm"
+            $result.Language | Should -Be "en"
+            $result.Profile | Should -Be "meeting"
+            $result.MinSpeakers | Should -Be 1
+            $result.MaxSpeakers | Should -Be 1
+            $result.IsDefault | Should -BeFalse
         }
     }
 }

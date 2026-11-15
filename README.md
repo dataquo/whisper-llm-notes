@@ -3,7 +3,7 @@
 [![CI Pipeline](https://github.com/dataquo/WHISPER/actions/workflows/ci.yml/badge.svg)](https://github.com/dataquo/WHISPER/actions/workflows/ci.yml)
 [![PowerShell 7.0+](https://img.shields.io/badge/PowerShell-7.0%2B-blue.svg)](https://github.com/PowerShell/PowerShell)
 [![Docker](https://img.shields.io/badge/Docker-WhisperX-2496ED.svg)](https://www.docker.com/)
-[![Version](https://img.shields.io/badge/Version-v06.05-brightgreen.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-v06.06-brightgreen.svg)](CHANGELOG.md)
 
 A resilient, high-throughput batch audio transcription and AI summarization pipeline powered by **PowerShell 7+**, **FFmpeg**, **WhisperX (Docker)**, **Ollama**, and **LM Studio**.
 
@@ -12,7 +12,8 @@ A resilient, high-throughput batch audio transcription and AI summarization pipe
 ## 🌟 Key Features
 
 * **Smart Batch Orchestration**: Automatically scans folders for media files, inspects existing output formats, and executes only missing stages without redundant re-transcriptions.
-* **Intelligent Filename Tagging**: Automatically detects language, DSP profile, and speaker counts directly from file naming patterns (e.g. `recording.SK-E2.mp4`).
+* **External Video Pre-Processing Orchestration**: Integrates companion video conversion (`..\DJI\convert_DJI_videos_with_MetaData.ps1`) to transcode high-resolution captures via SVT-AV1 preset 2 (`CRF 44`), Opus audio, and hardware CUDA decoding prior to ASR. Includes smart duplicate suppression for converted `.webm` files and bypass control via `-SkipDJI`.
+* **Intelligent Filename Tagging**: Automatically detects language, DSP profile, and speaker counts directly from file naming patterns (e.g. `recording.SK-E2.mp4`), resilient against video transcode suffixes (`.CRF-44_LIBSVT-AV1...`).
 * **High-Visibility Terminal Alerts**: Emits prominent red warnings whenever media files lack profile tagging, notifying users that defaults are being applied and encouraging standard convention.
 * **Resilient Silence & Zero-Speech Handling**: Patched WhisperX VAD pipeline and PowerShell output generators prevent crashes on quiet or silent audio, gracefully outputting blank transcripts without stalling folder batches.
 * **Profile-Based FFmpeg Audio DSP**:
@@ -61,8 +62,8 @@ WHISPER/
 ├── docs/
 │   ├── ARCHITECTURE.md          # End-to-end technical architecture & diagrams
 │   ├── WORKFLOW_GUIDE.md        # Operations, troubleshooting & developer runbook
-│   └── adr/                     # Architecture Decision Records (0001–0011)
-├── CHANGELOG.md                 # Release history and changelog
+│   └── adr/                     # Architecture Decision Records (0001–0014)
+├── CHANGELOG.md                 # Release history and changelog (v01.00 to v06.06)
 ├── AGENTS.md                    # Operating guidelines for AI coding agents
 ├── GEMINI.md                    # Project rules & manual Git policies
 ├── PSScriptAnalyzerSettings.psd1 # Linter rule definitions
