@@ -4,6 +4,46 @@ All notable changes to the WHISPER project are documented in this file. The proj
 
 ---
 
+## [v07.00] - 2026-11-23
+### Added
+* **Architecture Decision Record 0015** (`docs/adr/0015-macos-apple-silicon-mlx-mps-hybrid-architecture.md`):
+  * Comprehensive architectural specification for Apple Silicon (M2 Max, 32 GB Unified Memory) acceleration evaluating container GPU boundaries, dual-engine heterogeneity (MLX vs. PyTorch MPS), and sequential multi-model VRAM management.
+* **macOS Apple Silicon Native GPU Backend (`macos/`)**:
+  * `macos/whisperx_mlx_server.py`: FastAPI server implementing the exact WhisperX `/asr` REST API contract utilizing Apple `mlx-whisper` on Metal GPU (Stage 1), `whisperx.align` via `wav2vec2` on PyTorch MPS GPU (Stage 2), and `pyannote/speaker-diarization-3.1` on PyTorch MPS GPU (Stage 3).
+  * Automatic Unified Memory flushing (<0.1s) after each transcription via `mx.clear_cache()` and `torch.mps.empty_cache()` to prevent swapping with LM Studio 35B models.
+  * Modern FastAPI `@asynccontextmanager lifespan` handler replacing deprecated `@app.on_event("startup")`.
+  * `macos/convert_kinit_sk_to_mlx.py`: Automatic conversion utility downloading and packaging Slovak `kinit/whisper-large-v3-sk` weights into Apple MLX FP16 format at `~/.cache/whisper-mlx/whisper-large-v3-kinit-sk-mlx`.
+  * `macos/setup_macos.sh`: Automated environment bootstrap for Homebrew tools (`ffmpeg`, `pwsh`, `python3`), Python 3.11 virtual environment, MLX dependencies, and config initialization.
+  * `macos/requirements-macos.txt` & `macos/.env.example`: Pinned Apple Silicon dependencies and Hugging Face token configuration.
+  * `config/config.local.macos.json.example`: Machine override template pre-configured for the `native-mlx` service.
+* **Cross-Platform Engine & Orchestrator Enhancements**:
+  * Added `Test-IsWindowsPlatform` and `Get-PlatformBinaryName` to abstract binary execution (`ffmpeg.exe`/`curl.exe` on Windows vs. `ffmpeg`/`curl` on macOS/Linux).
+  * Standardized directory navigation and path resolution using `Join-Path` to eliminate literal backslash artifacts on Unix filesystems.
+  * Extended `Get-SystemInfo` to gather Apple Silicon M2 Max CPU cores, Metal GPU details, and Unified Memory stats via `sysctl` and `sw_vers`.
+  * Enhanced `Get-WhisperContainerMetadata`, `Ensure-WhisperContainerRunning`, and `Restart-WhisperContainer` to recognize `native-mlx` service mode, retrieving telemetry via `/openapi.json` and triggering `POST /gc` without Docker CLI errors.
+* **Dedicated macOS Cross-Platform Pester Test Suite**:
+  * Added `tests/macos-crossplatform.Tests.ps1` validating binary resolution, system info schemas, `native-mlx` lifecycle, config deep-merging, and path joining (10/10 tests passing; 53/53 across full suite).
+
+### Fixed
+* **Curl Multipart Quoting for Filenames with Commas (`exit code: 26`)**:
+  * In `src/whisper-asr-service-docker.ps1`, wrapped `-F "audio_file=@\"$TempProcessedFile\""` with escaped quotes. Previously, `curl` interpreted commas in filenames (e.g. `...Zmena výšky, frekvencie...`) as multi-file delimiters, causing `curl: (26) Failed to open/read local data from file`.
+* **PyTorch 2.6 `weights_only=True` Unpickling Compatibility**:
+  * In `macos/whisperx_mlx_server.py`, added safe globals registration for `omegaconf.listconfig.ListConfig` and `dictconfig.DictConfig` via `torch.serialization.add_safe_globals`, and defaulted `weights_only=False` on trusted model checkpoints. Prevents `WeightsUnpickler error` on Silero VAD and PyAnnote Diarization.
+* **Gated Hugging Face Token Authentication for PyAnnote 3.1**:
+  * Added downstream environment variable propagation (`os.environ["HF_TOKEN"]` and `os.environ["HUGGING_FACE_HUB_TOKEN"]`) and diagnostic console hints detailing the required gated model agreements on both `pyannote/speaker-diarization-3.1` and `pyannote/segmentation-3.0`.
+* **SpeechBrain Optional Module Traceback Protection**:
+  * Monkey-patched `speechbrain.utils.importutils.LazyModule.__getattr__` to prevent traceback formatting exceptions when optional third-party integrations (such as `k2_fsa`) are absent.
+* **Audio Loading with `whisperx.load_audio`**:
+  * Switched input file audio loading from `soundfile` to `whisperx.load_audio`, resolving `libsndfile` MP3 decoding limitations on macOS.
+
+### Changed
+* **Canonical Version Bump to v07.00**:
+  * Updated `$ScriptVersionNumber = "v07.00"` in `src/whisper-asr-service-docker.ps1`.
+  * Updated Comment-Based Help version metadata to `v07.00` in `src/_MASTER_WHISPER.ps1` and `src/whisper-asr-service-docker.ps1`.
+  * Updated documentation across `README.md`, `docs/ARCHITECTURE.md`, `docs/WORKFLOW_GUIDE.md`, `AGENTS.md`, and `GEMINI.md`.
+
+---
+
 ## [v06.06] - 2026-11-15
 ### Added
 * **Architecture Decision Record 0014** (`docs/adr/0014-dji-video-conversion-orchestration-and-duplicate-suppression.md`):

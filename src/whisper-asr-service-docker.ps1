@@ -1,4 +1,4 @@
-<#
+﻿<#
 
  WORKING! 
 
@@ -260,7 +260,17 @@ v06.05
 v06.06
 - External DJI Video Conversion Integration: Master orchestrator invokes ..\DJI\convert_DJI_videos_with_MetaData.ps1 prior to ASR with profile 'special-quality-hw-dec-cuda' and silence detection disabled ('0').
 - Converted Media Duplicate Suppression: Automatically excludes converted WebM files (*.CRF-*_LIBSVT-AV1*.webm) from transcription when original source media (.mp4, .mov, .m4a) exists in directory.
-- Suffix-Resilient Parameter Parsing: Normalizes filenames containing video transcode metadata (.CRF-44_LIBSVT-AV1...) to ensure accurate profile and speaker extraction even when converted WebM files are processed standalone.#>
+- Suffix-Resilient Parameter Parsing: Normalizes filenames containing video transcode metadata (.CRF-44_LIBSVT-AV1...) to ensure accurate profile and speaker extraction even when converted WebM files are processed standalone.
+
+v07.00
+- Cross-Platform macOS Apple Silicon (M2 Max) Support: Enables 100% native Metal & MPS GPU acceleration using hybrid mlx-whisper (Metal GPU ASR) and whisperx (PyTorch MPS wav2vec2 alignment & pyannote.audio 3.1 diarization).
+- Platform Binary & Path Abstraction: Added Test-IsWindowsPlatform and Get-PlatformBinaryName to dispatch ffmpeg/curl binaries and Join-Path directory structures across Windows and macOS.
+- Native Service Lifecycle & Memory Management: Added native-mlx service container designation, calling POST /gc for instant Unified Memory clearing (<0.1s) and retrieving Apple Metal/MPS telemetry via /openapi.json.
+- macOS System Profiling: Extended Get-SystemInfo to gather Apple Silicon M2 Max core, GPU, and Unified Memory hardware metrics via sysctl and system_profiler.
+- Slovak kinit-sk Model Auto-Routing: Transparently routes requests for Slovak models to converted local MLX FP16 weights on macOS while preserving large-v3 for other profiles.
+- Curl Multipart Escaping for Commas & Special Characters: Enclosed file paths in escaped double-quotes in curl arguments (-F "audio_file=@`"$TempProcessedFile`"") to prevent curl from splitting filenames with commas into separate file arguments, resolving curl exit code 26.
+- PyTorch 2.6+ Checkpoint Safety: Registered safe OmegaConf globals and configured safe unpickling fallback in whisperx_mlx_server.py to resolve PyTorch 2.6 weights_only=True crashes in Silero VAD and PyAnnote Diarization.
+- Verified Apple Silicon Performance: Confirmed real-world processing throughput of RTF 0.191x - 0.608x (up to 5.2x faster than real-time) with 14W-45W Metal GPU draw and zero Unified Memory swap thrashing with LM Studio 35B models.#>
 
 
 
@@ -295,6 +305,23 @@ param(
     [Alias("DisableLLMs", "SkipLLM", "NoLLM")]
     [switch]$DisableLLM              # When specified, skips all LLM summarization (LM Studio and Ollama)
 )
+
+# --- Platform Detection and Binary Helpers ---
+function Test-IsWindowsPlatform {
+    if ($null -ne $IsWindows) { return [bool]$IsWindows }
+    return ($env:OS -match "Windows")
+}
+
+function Get-PlatformBinaryName {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$BaseName
+    )
+    if (Test-IsWindowsPlatform) {
+        return "$BaseName.exe"
+    }
+    return $BaseName
+}
 
 # --- Configuration Loading with Deep Merging (Base Defaults + Local Override) ---
 function Get-PipelineConfig {
@@ -426,8 +453,8 @@ function Get-WhisperContainerMetadata {
         status         = $null
     }
 
-    # 1. Inspect Docker container directly if docker command is available
-    if (Get-Command docker -ErrorAction SilentlyContinue) {
+    # 1. Inspect Docker container directly if docker command is available (skip if native-mlx service)
+    if ($ContainerName -ne "native-mlx" -and (Get-Command docker -ErrorAction SilentlyContinue)) {
         try {
             $inspectJson = docker inspect $ContainerName 2>$null
             if ($LASTEXITCODE -ne 0 -or -not $inspectJson) {
@@ -462,14 +489,24 @@ function Get-WhisperContainerMetadata {
         }
     }
 
-    # 2. HTTP Fallback via /openapi.json if docker inspect did not populate api_version
+    # 2. HTTP Fallback via /openapi.json if docker inspect did not populate api_version (e.g. native macOS service or remote host)
     if (-not $meta.api_version -and $ApiUrl) {
         try {
             $baseUri = ([System.Uri]$ApiUrl).GetLeftPart([System.UriPartial]::Authority)
             $openapi = Invoke-RestMethod -Uri "$baseUri/openapi.json" -TimeoutSec 2 -ErrorAction Stop
-            if ($openapi -and $openapi.info -and $openapi.info.version) {
-                $meta.api_version = $openapi.info.version
-                if (-not $meta.status) { $meta.status = "online" }
+            if ($openapi -and $openapi.info) {
+                if ($openapi.info.x_backend_metadata) {
+                    $xMeta = $openapi.info.x_backend_metadata
+                    $meta.container_name = if ($xMeta.container_name) { $xMeta.container_name } else { $ContainerName }
+                    $meta.image          = $xMeta.image
+                    $meta.image_id       = $xMeta.image_id
+                    $meta.api_version    = if ($xMeta.api_version) { $xMeta.api_version } else { $openapi.info.version }
+                    $meta.cudnn_version  = $xMeta.cudnn_version
+                    $meta.status         = if ($xMeta.status) { $xMeta.status } else { "online" }
+                } else {
+                    $meta.api_version = $openapi.info.version
+                    if (-not $meta.status) { $meta.status = "online" }
+                }
             }
         } catch {
             # API endpoint offline or unreachable
@@ -483,9 +520,6 @@ function Ensure-WhisperContainerRunning {
     param(
         [PSCustomObject]$PipelineConfig
     )
-    if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
-        return
-    }
 
     $ContainerName = if ($PipelineConfig -and $PipelineConfig.whisper_service -and $PipelineConfig.whisper_service.docker_container_name) {
         $PipelineConfig.whisper_service.docker_container_name
@@ -501,6 +535,17 @@ function Ensure-WhisperContainerRunning {
         [bool]$PipelineConfig.whisper_service.auto_restart_container
     } else {
         $true
+    }
+
+    if ($ContainerName -eq "native-mlx") {
+        if (-not (Test-WhisperServiceHealth -ApiUrl $ApiUrl -TimeoutSeconds 1)) {
+            Write-Warning "Native Whisper MLX service ($ApiUrl) is not responding. Please ensure the native macOS server (uvicorn) is running."
+        }
+        return
+    }
+
+    if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
+        return
     }
 
     # Check if container exists in Docker
@@ -532,9 +577,6 @@ function Restart-WhisperContainer {
     param(
         [PSCustomObject]$PipelineConfig
     )
-    if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
-        return
-    }
 
     $ContainerName = if ($PipelineConfig -and $PipelineConfig.whisper_service -and $PipelineConfig.whisper_service.docker_container_name) {
         $PipelineConfig.whisper_service.docker_container_name
@@ -556,9 +598,32 @@ function Restart-WhisperContainer {
         return
     }
 
+    # If configured as native MLX or running native service outside Docker, trigger native garbage collection
+    if ($ContainerName -eq "native-mlx" -or (-not (Get-Command docker -ErrorAction SilentlyContinue))) {
+        if (Test-WhisperServiceHealth -ApiUrl $ApiUrl -TimeoutSeconds 1) {
+            try {
+                $baseUri = ([System.Uri]$ApiUrl).GetLeftPart([System.UriPartial]::Authority)
+                Write-Host "Flushing Apple Metal & MPS Unified Memory cache via native GC endpoint ($baseUri/gc)..." -ForegroundColor DarkYellow
+                Invoke-RestMethod -Uri "$baseUri/gc" -Method POST -TimeoutSec 5 -ErrorAction SilentlyContinue | Out-Null
+            } catch {
+                # Ignore endpoint error if not implemented
+            }
+        }
+        return
+    }
+
     # Check if container exists in Docker
     $containerState = docker inspect --format="{{.State.Status}}" $ContainerName 2>$null
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($containerState)) {
+        # Check if native service responds to /gc endpoint
+        if (Test-WhisperServiceHealth -ApiUrl $ApiUrl -TimeoutSeconds 1) {
+            try {
+                $baseUri = ([System.Uri]$ApiUrl).GetLeftPart([System.UriPartial]::Authority)
+                Invoke-RestMethod -Uri "$baseUri/gc" -Method POST -TimeoutSec 5 -ErrorAction SilentlyContinue | Out-Null
+                Write-Host "Flushed Unified Memory cache via native GC endpoint ($baseUri/gc)." -ForegroundColor Green
+                return
+            } catch { }
+        }
         Write-Warning "Cannot restart container: '$ContainerName' was not found in Docker."
         Write-Warning "Check 'docker_container_name' in 'config/config.local.json'."
         return
@@ -708,7 +773,72 @@ function Adjust-TranscriptTimestamps {
 
 # Collects comprehensive computer system information for logging
 function Get-SystemInfo {
-    # Hostname
+    if (-not (Test-IsWindowsPlatform)) {
+        # Hostname on macOS/Linux
+        $hostname = if ($env:HOSTNAME) { $env:HOSTNAME } else { try { (hostname 2>$null) } catch { "macos-host" } }
+        
+        # CPU Information via sysctl
+        $cpuName = try { (sysctl -n machdep.cpu.brand_string 2>$null) } catch { $null }
+        if (-not $cpuName) {
+            $cpuName = try { (sysctl -n hw.model 2>$null) } catch { "Apple Silicon" }
+        }
+        $cpuCores = try { [int](sysctl -n hw.physicalcpu 2>$null) } catch { 12 }
+        $cpuLogicalProcessors = try { [int](sysctl -n hw.logicalcpu 2>$null) } catch { 12 }
+
+        # Memory (RAM) via sysctl
+        $memBytes = try { [long](sysctl -n hw.memsize 2>$null) } catch { 34359738368 }
+        $totalMemoryGB = [Math]::Round($memBytes / 1GB, 2)
+        $availableMemoryGB = $totalMemoryGB
+
+        # Operating System via sw_vers / uname
+        $osVersion = try { (sw_vers -productVersion 2>$null) } catch { "" }
+        $osCaption = if ($osVersion) { "macOS $osVersion" } else { "macOS" }
+        $osArchitecture = try { (uname -m 2>$null) } catch { "arm64" }
+
+        $gpuName = if ($cpuName -match "Apple") { "$cpuName GPU" } else { "Apple M2 Max GPU" }
+
+        return [PSCustomObject]@{
+            hostname = $hostname
+            cpu = @{
+                name = $cpuName
+                cores = $cpuCores
+                logical_processors = $cpuLogicalProcessors
+                max_clock_speed = "Dynamic (Apple Silicon)"
+            }
+            ram = @{
+                total_gb = $totalMemoryGB
+                available_gb = $availableMemoryGB
+                modules = @()
+            }
+            gpu = @{
+                name = $gpuName
+                driver_version = "Apple Metal / MPS"
+                all_detected_gpus = @(
+                    @{
+                        name = $gpuName
+                        driver_version = "Apple Metal / MPS"
+                        adapter_type = "Unified Memory (Metal)"
+                    }
+                )
+            }
+            motherboard = @{
+                manufacturer = "Apple Inc."
+                product = try { (sysctl -n hw.model 2>$null) } catch { "MacBook Pro" }
+            }
+            bios = @{
+                manufacturer = "Apple Inc."
+                version = "iBoot"
+                release_date = $null
+            }
+            disks = @()
+            operating_system = @{
+                caption = $osCaption
+                architecture = $osArchitecture
+            }
+        }
+    }
+
+    # Hostname (Windows)
     $hostname = $env:COMPUTERNAME
     
     # CPU Information
@@ -893,7 +1023,7 @@ if ($ExtractedParams.SpeakerCount) {
 
 # --- 2b. Script Version Detection ---
 
-$ScriptVersionNumber = "v06.06"
+$ScriptVersionNumber = "v07.00"
 
 $ScriptName = if ($MyInvocation.MyCommand.Path) {
     [System.IO.Path]::GetFileName($MyInvocation.MyCommand.Path)
@@ -1143,7 +1273,7 @@ if ($OutputFormat -eq "wav") {
 } else {
     $FfMpegOutputParams = "-acodec libmp3lame -b:a 64k"
 }
-$TempProcessedFile = "$OutputDir\$BaseName.$ProcessedSuffix.$OutputFormat"
+$TempProcessedFile = Join-Path $OutputDir "$BaseName.$ProcessedSuffix.$OutputFormat"
 
 # Check if processed file already exists and is valid to skip redundant FFmpeg conversion
 Write-Host "Checking for existing processed file: $TempProcessedFile" -ForegroundColor Gray
@@ -1173,7 +1303,8 @@ if ($ProcessedFileValid) {
         }
         Write-Host "Prepending lead-in silence: $($Config.lead_in_silence_seconds)s (${leadInMs}ms) to prime PyAnnote diarization..." -ForegroundColor DarkYellow
     }
-    $FfMpegCmd = "ffmpeg.exe -i `"$FilePath`" -af `"$ffmpegFilter`" $FfMpegOutputParams -ac 1 -ar 16000 `"$TempProcessedFile`" -y"
+    $ffmpegBin = Get-PlatformBinaryName "ffmpeg"
+    $FfMpegCmd = "$ffmpegBin -i `"$FilePath`" -af `"$ffmpegFilter`" $FfMpegOutputParams -ac 1 -ar 16000 `"$TempProcessedFile`" -y"
 
     # Set FFREPORT environment variable for FFmpeg logging with timestamped filename
     # Use relative filename to avoid Windows drive letter colon parsing issues in FFmpeg
@@ -1231,7 +1362,11 @@ if ($AppConfig.profiles -and $AppConfig.profiles.$Profile -and $AppConfig.profil
         (Join-Path $EffectiveScriptDir "..\.venv\Scripts\python.exe"),
         (Join-Path $EffectiveScriptDir ".venv\Scripts\python.exe"),
         (Join-Path (Get-Location) ".venv\Scripts\python.exe"),
-        (Join-Path (Get-Location) "..\.venv\Scripts\python.exe")
+        (Join-Path (Get-Location) "..\.venv\Scripts\python.exe"),
+        (Join-Path $EffectiveScriptDir "..\.venv\bin\python"),
+        (Join-Path $EffectiveScriptDir ".venv\bin\python"),
+        (Join-Path (Get-Location) ".venv\bin\python"),
+        (Join-Path (Get-Location) "..\.venv\bin\python")
     )
     $VenvPython = $null
     foreach ($cand in $VenvPythonCandidates) {
@@ -1288,7 +1423,11 @@ if ($Config.use_wpe_dereverb) {
             (Join-Path $EffectiveScriptDir "..\.venv\Scripts\python.exe"),
             (Join-Path $EffectiveScriptDir ".venv\Scripts\python.exe"),
             (Join-Path (Get-Location) ".venv\Scripts\python.exe"),
-            (Join-Path (Get-Location) "..\.venv\Scripts\python.exe")
+            (Join-Path (Get-Location) "..\.venv\Scripts\python.exe"),
+            (Join-Path $EffectiveScriptDir "..\.venv\bin\python"),
+            (Join-Path $EffectiveScriptDir ".venv\bin\python"),
+            (Join-Path (Get-Location) ".venv\bin\python"),
+            (Join-Path (Get-Location) "..\.venv\bin\python")
         )
         $VenvPython = $null
         foreach ($cand in $VenvPythonCandidates) {
@@ -1510,18 +1649,19 @@ if (-not (Test-Path -LiteralPath "$FullBase.json")) {
     # Show initial progress state
     Write-Progress -Activity "Processing Audio File" -Status "Starting transcription..." -PercentComplete 20
 
-    # Execute the call using curl.exe for multipart/form-data
+    # Execute the call using curl for multipart/form-data
     Write-Host "Uploading file: $TempProcessedFile" -ForegroundColor Cyan
     
     try {
-        # Build curl arguments for multipart upload
+        $curlBin = Get-PlatformBinaryName "curl"
+        # Build curl arguments for multipart upload (quote file path to safely handle commas, spaces, and brackets)
         $curlArgs = @(
             "-s", "-X", "POST", "$FullUrl",
-            "-F", "audio_file=@$TempProcessedFile"
+            "-F", "audio_file=@`"$TempProcessedFile`""
         )
         
         # Execute curl command
-        $Response = & curl.exe @curlArgs
+        $Response = & $curlBin @curlArgs
         
         if ($LASTEXITCODE -ne 0) {
             Write-Host "API returned error response" -ForegroundColor Yellow

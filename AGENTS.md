@@ -35,7 +35,7 @@ WHISPER/
 ├── .github/workflows/
 │   ├── ci.yml                   # PSScriptAnalyzer + Pester 5/6 CI pipeline
 │   └── release.yml              # Automated release packaging on tag push
-├── CHANGELOG.md                 # Full release history from v01.00 to v06.06
+├── CHANGELOG.md                 # Full release history from v01.00 to v07.00
 ├── GEMINI.md                    # Active rules (NO automatic git commits/pushes)
 └── README.md                    # Project overview & quickstart
 ```
@@ -99,12 +99,20 @@ WHISPER/
 * **Regex Encoding Safety**: All regex pattern cleaning (such as in `Clean-TranscriptText`) must use explicit unicode escape sequences (e.g. `\u2013\u2014`) rather than literal em-dashes to avoid stripping Czech/Slovak diacritics under Windows default code pages.
 
 ### E. Script Versioning & Runtime Telemetry Auditing
-* **Canonical Script Version**: Maintain explicit constant `$ScriptVersionNumber = "v06.06"` and `$ScriptName = "whisper-asr-service-docker.ps1"`. Never re-introduce filename-based versioning for scripts inside `src/`.
+* **Canonical Script Version**: Maintain explicit constant `$ScriptVersionNumber = "v07.00"` and `$ScriptName = "whisper-asr-service-docker.ps1"`. Never re-introduce filename-based versioning for scripts inside `src/`.
 * **Telemetry Logging Invariants**: Both initial logs (`New-TranscriptionLog`) and completion summaries (`Write-CompletionSummary`) must write separate `"script_name"` and `"script_version"` properties.
 * **Container Metadata Forwarding (`Get-WhisperContainerMetadata`)**: Always forward `$PipelineConfig` into container inspection so machine-level overrides (`config.local.json`) are respected. Maintain the 3-tier inspection strategy (configured Docker inspect $\to$ candidate fallback $\to$ HTTP `/openapi.json`) to guarantee zero-null telemetry logs.
 * **LLM Service Version Auditing**: When integrating LLM summarization endpoints, query `/api/version` (guarded by a $\le 2\text{s}$ timeout) and record service version rows in markdown parameter tables.
 * **Silence & Zero-Speech Pipeline Invariants**: Never treat empty segment arrays (`$ApiResult.segments.Count -eq 0`) as fatal script aborts. Ensure empty downstream transcript files are generated gracefully so batch directories do not enter infinite reprocessing loops (ADR 0013).
 * **Untagged Filename Warnings**: Maintain high-visibility red warnings (`-ForegroundColor Red`) whenever a media file lacks profile tagging or explicit CLI parameters.
+
+### F. Cross-Platform Execution & macOS Apple Silicon Invariants
+* **Dual-Platform Architecture**: The codebase supports both Windows 11 (NVIDIA CUDA via Docker) and macOS Apple Silicon (M1/M2/M3/M4 via native `macos/whisperx_mlx_server.py`).
+* **Platform-Agnostic Binaries & Paths**: Never hardcode `.exe` extensions or literal backslashes (`\`). Always resolve binaries via `Get-PlatformBinaryName` and combine paths using `Join-Path`.
+* **Curl Multipart Quoting**: When passing file paths to `curl` multipart arguments (`-F`), always enclose the path in escaped double-quotes (`-F "audio_file=@`"$TempProcessedFile`""`). Unquoted paths containing commas, semicolons, or spaces cause curl to treat them as multi-file delimiters, resulting in `curl: (26) Failed to open/read local data from file`.
+* **PyTorch 2.6+ Checkpoint Safety**: In Python services, PyTorch 2.6 defaults `torch.load` to `weights_only=True`. Always register safe globals (`omegaconf.listconfig.ListConfig`, `dictconfig.DictConfig`) and allow `weights_only=False` fallback on trusted local checkpoints to avoid breaking Silero VAD and PyAnnote Diarization.
+* **`native-mlx` Container Lifecycle**: When `$PipelineConfig.whisper_service.docker_container_name` is set to `"native-mlx"`, the engine skips Docker CLI calls (`docker inspect`, `docker restart`), retrieves container metadata via `GET /openapi.json`, and flushes Unified Memory via `POST /gc`.
+* **Dedicated macOS Tests**: Cross-platform abstractions and `native-mlx` workflows are tested in `tests/macos-crossplatform.Tests.ps1`.
 
 ---
 

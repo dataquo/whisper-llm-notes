@@ -1,12 +1,12 @@
 # WHISPER Technical Architecture & Design
 
-This document details the end-to-end technical architecture, data processing pipeline, profile definitions, and service integrations of the **WHISPER** project (v06.06).
+This document details the end-to-end technical architecture, data processing pipeline, profile definitions, and service integrations of the **WHISPER** project (v07.00).
 
 ---
 
 ## 1. System Overview
 
-WHISPER is a modular, high-throughput batch audio transcription and AI summarization pipeline designed for Windows environments. It bridges PowerShell automation with local/remote containerized inference engines and external video transcoding workflows:
+WHISPER is a modular, high-throughput batch audio transcription and AI summarization pipeline designed for cross-platform execution on Windows 11 (NVIDIA CUDA via Docker) and macOS Apple Silicon (M2 Max native Metal & MPS GPU). It bridges PowerShell automation with local/remote containerized inference engines and external video transcoding workflows:
 
 ```mermaid
 flowchart TD
@@ -242,7 +242,7 @@ flowchart TD
 
 ### C. Logging Schema & Metadata Attributes
 Every transcription generates a structured `.log` file containing:
-* **`script_name` & `script_version`**: Exact pipeline release version (`v06.06`).
+* **`script_name` & `script_version`**: Exact pipeline release version (`v07.00`).
 * **`container_information`**: Container name, image tag, image layer digest, internal API version, cuDNN version, and status.
 * **`api_parameters`**: Language code and selected model name (`large-v3`, `kinit-sk`, etc.).
 * **`configuration_parameters`**: Profile, diarization toggles, VAD thresholds, speaker bounds, lead-in silence seconds, and FFmpeg filter chains.
@@ -284,5 +284,71 @@ When video conversion completes, each `.mp4` generates a companion WebM file:
 <BaseName>.CRF-<crf>_<parametersVideoSufix>_<resolution>.webm
 ```
 * **Duplicate Suppression**: `_MASTER_WHISPER.ps1` scans the folder and identifies files matching `(\.CRF-\d+|_CRF\d+|[\._]LIBSVT-AV1)`. If an original source media file (`.mp4`, `.mov`, `.m4a`, `.flac`, `.mp3`) with the matching base name is present, the `.webm` transcode is excluded from audio candidate queues, eliminating redundant processing.
-* **Tag Preservation**: If the original source media is absent (e.g. user moved or purged 4K originals), `Parse-FileNameParameters` strips transcode metadata before regex evaluation, ensuring parameter tags (`.SK-M2`, `.EN-M1`) correctly configure language, DSP profile, and speaker counts.
+---
+
+## 10. macOS Apple Silicon (M2 Max) Native Acceleration Architecture
+
+As documented in [ADR 0015](file:///d:/_DOCUMENTS/_SCRIPTS/WHISPER/docs/adr/0015-macos-apple-silicon-mlx-mps-hybrid-architecture.md), WHISPER v07.00 introduces native dual-platform support for Apple Silicon (M2 Max, 12-core CPU, 30/38-core GPU, 32 GB Unified Memory).
+
+### A. Architectural Options Evaluated
+
+To determine how to offload GPU processing onto Apple Silicon without compromising quality, three architectures were analyzed:
+
+| Architecture | Hardware Used | Diarization & Word Timestamps | Pros | Cons & Bottlenecks | Verdict |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Option 1: whisper.cpp (`whisper-server`)** | Apple Neural Engine (ANE) + Metal | Rudimentary / None (No PyAnnote) | Single C++ binary; cool/quiet fans; minimal RAM | Lacks `wav2vec2` alignment; lacks PyAnnote diarization; cannot enforce `min`/`max_speakers` bounds | **Rejected** (Diarization quality compromised) |
+| **Option 2: mlx-audio Server** | 100% Metal GPU (MLX) | Sortformer / Nemotron diarization | Ready-made OpenAI REST API; pure MLX stack | Lacks `wav2vec2` forced alignment (causing timestamp drift); hardcoded to $\le 4$ speakers; breaks API contract | **Rejected** (Alignment quality compromised) |
+| **Option 3: WhisperX MLX Hybrid (`whisperx_mlx_server.py`)** | M2 Max Metal GPU (ASR) + PyTorch MPS GPU (Alignment & Diarization) | Full WhisperX Parity (`wav2vec2` + `pyannote.audio 3.1`) | 100% GPU acceleration; zero quality loss; exact API contract; instant Unified Memory GC (<0.1s) | Requires Python venv and Hugging Face gated token setup | **SELECTED** (Zero compromise on speed, accuracy, or features) |
+
+### B. Hybrid Multi-Stage Execution Pipeline
+
+```mermaid
+flowchart TD
+    subgraph Client["Cross-Platform Client (pwsh 7+)"]
+        PS["src/_MASTER_WHISPER.ps1 / whisper-asr-service-docker.ps1\n(Auto-resolves: curl / ffmpeg, Join-Path, quoted paths)"]
+    end
+
+    subgraph Server["Native macOS Server (macos/whisperx_mlx_server.py)"]
+        API["FastAPI REST Listener\n(http://localhost:9000/asr)"]
+        
+        S1["Stage 1: ASR Transcription (80% compute)\nApple mlx-whisper on M2 Max Metal GPU\nModel: whisper-large-v3-mlx / kinit-sk-mlx"]
+        S2["Stage 2: Forced Alignment (5% compute)\nwhisperx.align (wav2vec2) on PyTorch MPS GPU\nLanguages: sk, cs, en"]
+        S3["Stage 3: Speaker Diarization (15% compute)\nwhisperx.DiarizationPipeline (pyannote 3.1) on MPS GPU\nExact min_speakers / max_speakers"]
+        S4["Stage 4: Unified Memory Reclamation\nPOST /gc -> mx.clear_cache() + torch.mps.empty_cache()\n(<0.1s flush back to macOS)"]
+    end
+
+    subgraph LLMDownstream["Downstream LLM Services (Unified Memory Coexistence)"]
+        LM["LM Studio (qwen3.6-35b-a3b @ 4-bit, ~21 GB VRAM)\nGenerates .NOTES.md without memory pressure"]
+        OL["Ollama (gemma3:4b, ~3.3 GB)\nGenerates .SUMMARY.md"]
+    end
+
+    PS -->|"curl multipart upload\n(audio_file=@\"path\")"| API
+    API --> S1
+    S1 --> S2
+    S2 --> S3
+    S3 --> S4
+    S4 -->|"JSON Transcripts Returned"| PS
+    PS -->|"POST /v1/chat/completions"| LM
+    PS -->|"POST /api/chat"| OL
+```
+
+### C. 32 GB Unified Memory Coordination & Zero-Swap Lifecycle
+On Apple Silicon, unified memory is shared dynamically between CPU, GPU, and system buffers:
+1. **WhisperX Server Resident Footprint**: `whisperx_mlx_server.py` consumes ~5.5 GB during active transcription.
+2. **Instant Garbage Collection (`POST /gc`)**: As soon as transcription and diarization finish, the server triggers `flush_unified_memory()`, calling `mx.clear_cache()` and `torch.mps.empty_cache()`. This drops active VRAM in $<0.1\text{s}$.
+3. **Coexistence with 35B LLMs**: LM Studio loads large models (e.g. `qwen3.6-35b-a3b` 4-bit, requiring ~21 GB) without triggering macOS memory compression or SSD swap thrashing.
+
+### D. Production Edge Cases & Fixes in v07.00
+1. **PyTorch 2.6 `weights_only=True` Unpickling Compatibility**:
+   - PyTorch 2.6 changed `torch.load` default to `weights_only=True`, blocking PyAnnote and Silero VAD from unpickling OmegaConf configuration objects (`omegaconf.listconfig.ListConfig`).
+   - **Resolution**: `whisperx_mlx_server.py` registers safe globals via `torch.serialization.add_safe_globals([ListConfig, DictConfig])` and monkey-patches `torch.load` to default `weights_only=False` on trusted local model weights.
+2. **Curl Multipart Upload Quoting for Filenames with Commas**:
+   - In `curl`, `-F "audio_file=@$Path"` treats commas (`,`) as delimiters for multi-file attachments. When audio filenames contain commas (e.g. `...Zmena výšky, frekvencie...`), curl attempts to split the path, causing `curl: (26) Failed to open/read local data from file`.
+   - **Resolution**: Encapsulated the path inside embedded escaped quotes: `-F "audio_file=@`"$TempProcessedFile`""`.
+3. **Gated PyAnnote 3.1 Model Authentication**:
+   - PyAnnote 3.1 requires agreeing to user terms on **both** `pyannote/speaker-diarization-3.1` and `pyannote/segmentation-3.0`.
+   - Fine-grained Hugging Face tokens must explicitly check "Read contents of gated repos you can access".
+   - The server exports `HF_TOKEN` into `os.environ["HF_TOKEN"]` and `os.environ["HUGGING_FACE_HUB_TOKEN"]` so downstream `huggingface_hub` requests inherit authentication.
+4. **SpeechBrain Optional Module Traceback Protection**:
+   - Patched `speechbrain.utils.importutils.LazyModule.__getattr__` to prevent traceback formatting exceptions when optional third-party integrations (such as `k2_fsa`) are absent.
 

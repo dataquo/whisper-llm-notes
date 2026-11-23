@@ -39,6 +39,14 @@ logs/
 
 # Local environment & secret overrides
 config/config.local.json
+.env
+macos/.env
+
+# Python virtual environment & bytecode caches
+.venv/
+macos/.venv/
+__pycache__/
+*.py[cod]
 
 # Temporary files, caches, and scratchpads
 scratch/

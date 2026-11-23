@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Master Whisper Script - Batch Transcription & AI Summarization Orchestrator.
 
@@ -97,7 +97,9 @@
     Performs only WhisperX audio transcription and secondary formats, bypassing LLM processing.
 
 .NOTES
-    Version: v06.06
+    Version: v07.00
+    - Cross-Platform macOS Apple Silicon (M2 Max) Support: Enables native batch orchestration and engine delegation across Windows 11 and macOS pwsh environments.
+    - Path Standardization: Enforced Join-Path across all transcript checks, missing file evaluation, and candidate resolution to prevent literal backslash artifacts on Unix systems.
     - Integrated external DJI video conversion invocation (..\DJI\convert_DJI_videos_with_MetaData.ps1) using profile 'special-quality-hw-dec-cuda' without audio silence detection.
     - Added -SkipDJI and -DjiScriptPath parameters for flexible external video transcoding orchestration.
     - Added duplicate suppression for converted DJI WebM files (*.CRF-*_LIBSVT-AV1*.webm) when original source media exists.
@@ -452,7 +454,7 @@ foreach ($File in $AudioFiles) {
     # Check if ANY non-MD transcript file is missing or empty
     $AnyNonMdMissingOrEmpty = $false
     foreach ($ext in $NonMdExtensions) {
-        $CurrentFilePath = "$($File.DirectoryName)\$($File.BaseName)$ext"
+        $CurrentFilePath = Join-Path $File.DirectoryName "$($File.BaseName)$ext"
         
         if (Test-Path -LiteralPath $CurrentFilePath) {
             $Content = Get-Content -LiteralPath $CurrentFilePath -Raw -ErrorAction SilentlyContinue
@@ -468,7 +470,8 @@ foreach ($File in $AudioFiles) {
     }
     
     # Check which MD files are missing (NOTES.md and SUMMARY.md)
-    $MdCheck = Get-MissingMdFiles -BasePath "$($File.DirectoryName)\$($File.BaseName)" -OnlyOllama:$OnlyOllama -OnlyLMStudio:$OnlyLMStudio
+    $TargetBasePath = Join-Path $File.DirectoryName $File.BaseName
+    $MdCheck = Get-MissingMdFiles -BasePath $TargetBasePath -OnlyOllama:$OnlyOllama -OnlyLMStudio:$OnlyLMStudio
     
     # Determine if processing is needed
     $NeedsProcessing = if ($DisableLLM) {
@@ -494,7 +497,8 @@ foreach ($File in $AudioFiles) {
         if (-not $DisableLLM -and $MdCheck.SummaryMissing) { $MissingFiles += "SUMMARY.md" }
         if ($AnyNonMdMissingOrEmpty) {
             foreach ($ext in $NonMdExtensions) {
-                if (-not (Test-Path -LiteralPath "$($File.DirectoryName)\$($File.BaseName)$ext")) {
+                $checkExtPath = Join-Path $File.DirectoryName "$($File.BaseName)$ext"
+                if (-not (Test-Path -LiteralPath $checkExtPath)) {
                     $MissingFiles += "$ext"
                 }
             }

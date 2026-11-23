@@ -1,0 +1,19 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "_comment": "Rename or copy to config.local.json on macOS Apple Silicon (M2 Max) to use the native MLX + PyTorch MPS GPU server.",
+  "whisper_service": {
+    "api_url": "http://localhost:9000/asr",
+    "docker_container_name": "native-mlx",
+    "auto_restart_container": true,
+    "model": "large-v3"
+  },
+  "ollama_service": {
+    "api_url": "http://localhost:11434/api/generate",
+    "model": "gemma3:4b",
+    "unload_vram_after_processing": true
+  },
+  "lm_studio_service": {
+    "api_url": "http://localhost:1234/v1/chat/completions",
+    "model": "qwen/qwen3.6-35b-a3b"
+  }
+}

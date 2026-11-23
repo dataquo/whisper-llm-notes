@@ -3,14 +3,15 @@
 [![CI Pipeline](https://github.com/dataquo/WHISPER/actions/workflows/ci.yml/badge.svg)](https://github.com/dataquo/WHISPER/actions/workflows/ci.yml)
 [![PowerShell 7.0+](https://img.shields.io/badge/PowerShell-7.0%2B-blue.svg)](https://github.com/PowerShell/PowerShell)
 [![Docker](https://img.shields.io/badge/Docker-WhisperX-2496ED.svg)](https://www.docker.com/)
-[![Version](https://img.shields.io/badge/Version-v06.06-brightgreen.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-v07.00-brightgreen.svg)](CHANGELOG.md)
 
-A resilient, high-throughput batch audio transcription and AI summarization pipeline powered by **PowerShell 7+**, **FFmpeg**, **WhisperX (Docker)**, **Ollama**, and **LM Studio**.
+A resilient, high-throughput batch audio transcription and AI summarization pipeline powered by **PowerShell 7+**, **FFmpeg**, **WhisperX (Docker & Apple MLX)**, **Ollama**, and **LM Studio**.
 
 ---
 
 ## 🌟 Key Features
 
+* **Cross-Platform Execution (Windows 11 & macOS Apple Silicon M2 Max)**: Runs with 100% native GPU acceleration on both Windows 11 (NVIDIA CUDA via Docker) and macOS (Apple Silicon M2 Max via native `mlx-whisper` Metal GPU and PyTorch MPS). Single PowerShell codebase for both operating systems.
 * **Smart Batch Orchestration**: Automatically scans folders for media files, inspects existing output formats, and executes only missing stages without redundant re-transcriptions.
 * **External Video Pre-Processing Orchestration**: Integrates companion video conversion (`..\DJI\convert_DJI_videos_with_MetaData.ps1`) to transcode high-resolution captures via SVT-AV1 preset 2 (`CRF 44`), Opus audio, and hardware CUDA decoding prior to ASR. Includes smart duplicate suppression for converted `.webm` files and bypass control via `-SkipDJI`.
 * **Intelligent Filename Tagging**: Automatically detects language, DSP profile, and speaker counts directly from file naming patterns (e.g. `recording.SK-E2.mp4`), resilient against video transcode suffixes (`.CRF-44_LIBSVT-AV1...`).
@@ -62,8 +63,14 @@ WHISPER/
 ├── docs/
 │   ├── ARCHITECTURE.md          # End-to-end technical architecture & diagrams
 │   ├── WORKFLOW_GUIDE.md        # Operations, troubleshooting & developer runbook
-│   └── adr/                     # Architecture Decision Records (0001–0014)
-├── CHANGELOG.md                 # Release history and changelog (v01.00 to v06.06)
+│   └── adr/                     # Architecture Decision Records (0001–0015)
+├── macos/                       # macOS Apple Silicon (M2 Max) native GPU backend
+│   ├── whisperx_mlx_server.py   # Hybrid FastAPI server (Metal MLX + MPS PyTorch)
+│   ├── setup_macos.sh           # Automated environment and virtualenv bootstrap
+│   ├── convert_kinit_sk_to_mlx.py # Model conversion utility for Slovak weights
+│   ├── requirements-macos.txt   # Pinned Apple Silicon dependencies
+│   └── .env.example             # Hugging Face token template
+├── CHANGELOG.md                 # Release history and changelog (v01.00 to v07.00)
 ├── AGENTS.md                    # Operating guidelines for AI coding agents
 ├── GEMINI.md                    # Project rules & manual Git policies
 ├── PSScriptAnalyzerSettings.psd1 # Linter rule definitions
@@ -100,34 +107,32 @@ Name your audio/video files using the standard pattern:
 
 ## 🚀 Quick Start
 
-### 1. Prerequisites
-Ensure the following tools are installed:
-* **PowerShell 7.x+** (`pwsh`)
-* **FFmpeg** (accessible in system PATH)
-* **Docker Desktop** (WhisperX container running on port 9000)
-* **Ollama** (optional, for `SUMMARY.md` on port 11434)
-* **LM Studio** (optional, for `NOTES.md` on port 1234)
+### Platform Option A: Windows 11 (NVIDIA CUDA via Docker)
+1. **Prerequisites**: PowerShell 7+, FFmpeg in PATH, Docker Desktop (WhisperX on port 9000).
+2. **Local Overrides**: Copy `config\config.local.json.example` to `config\config.local.json` if needed.
+3. **Run Batch Transcription**:
+   ```powershell
+   pwsh -File .\src\_MASTER_WHISPER.ps1 -InputFolder "D:\Recordings\Meetings"
+   ```
 
-### 2. Configuration
-To override settings for your local machine (e.g. container name or endpoints):
-```powershell
-Copy-Item config\config.local.json.example config\config.local.json
-```
+### Platform Option B: macOS Apple Silicon (M1/M2/M3/M4 Native Metal GPU)
+1. **One-Command Setup**:
+   ```bash
+   export HF_TOKEN="hf_your_token_here"
+   ./macos/setup_macos.sh
+   ```
+2. **Start Native GPU Whisper Service**:
+   ```bash
+   python ./macos/whisperx_mlx_server.py
+   ```
+3. **Run Batch Transcription**:
+   ```powershell
+   pwsh -File ./src/_MASTER_WHISPER.ps1 -InputFolder ~/Recordings -SkipDJI
+   ```
 
-### 3. Run Batch Transcription
-```powershell
-# Standard batch processing (ASR + All LLMs)
-pwsh -File .\src\_MASTER_WHISPER.ps1 -InputFolder "D:\Recordings\Meetings"
+---
 
-# Selective LLM processing: Ollama Summary only
-pwsh -File .\src\_MASTER_WHISPER.ps1 -InputFolder "D:\Recordings\Meetings" -OnlyOllama
-
-# Selective LLM processing: LM Studio Notes only
-pwsh -File .\src\_MASTER_WHISPER.ps1 -InputFolder "D:\Recordings\Meetings" -OnlyLMStudio
-
-# Fast batch processing (ASR only, skip all LLMs)
-pwsh -File .\src\_MASTER_WHISPER.ps1 -InputFolder "D:\Recordings\Meetings" -DisableLLM
-```
+### Selective LLM Execution Switches (Cross-Platform)
 
 ### 4. Run Single File Transcription
 ```powershell

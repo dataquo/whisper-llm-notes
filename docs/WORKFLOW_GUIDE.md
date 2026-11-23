@@ -1,6 +1,6 @@
 # WHISPER Operational Runbook & Workflow Guide
 
-This guide provides practical instructions for daily operations, troubleshooting, testing, and developing within the **WHISPER** repository (v06.06).
+This guide provides practical instructions for daily operations, troubleshooting, testing, and developing within the **WHISPER** repository (v07.00).
 
 ---
 
@@ -121,7 +121,51 @@ To customize settings for your individual developer environment without modifyin
 
 ---
 
-## 4. Docker & Backend Services Management
+## 4. macOS Apple Silicon (M2 Max) Setup & Native GPU Operations
+
+Starting with **v07.00**, WHISPER runs natively on **macOS Apple Silicon (M1/M2/M3/M4)** with 100% Metal & MPS GPU acceleration using the exact same PowerShell scripts.
+
+### A. Prerequisites & One-Command Setup
+1. Clone or pull the repository on your Mac.
+2. Ensure you have your Hugging Face read token ready (either extract from your Windows Portainer container or from [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens)).
+3. Run the automated setup script:
+   ```bash
+   chmod +x ./macos/setup_macos.sh
+   export HF_TOKEN="hf_your_token_here"
+   ./macos/setup_macos.sh
+   ```
+   * Installs `ffmpeg`, `pwsh`, and `python3` via Homebrew if missing.
+   * Creates `./macos/.venv` and installs `mlx-whisper`, `torch` (with MPS), `whisperx`, and `pyannote.audio`.
+   * Automatically converts the Slovak fine-tuned model (`kinit/whisper-large-v3-sk`) to MLX format at `~/.cache/whisper-mlx/whisper-large-v3-kinit-sk-mlx`.
+   * Prepares `config/config.local.json` with `"docker_container_name": "native-mlx"`.
+
+### B. Starting the Native M2 Max GPU Whisper Service
+Start the FastAPI server on port 9000:
+```bash
+source ./macos/.venv/bin/activate
+python ./macos/whisperx_mlx_server.py
+```
+*(Optionally run via `nohup` or `launchd` in the background).*
+
+### C. Running Batch Transcription in macOS PowerShell
+In your terminal, launch PowerShell 7 (`pwsh`) and run:
+```powershell
+pwsh -File ./src/_MASTER_WHISPER.ps1 -InputFolder ~/Recordings -SkipDJI
+```
+
+### D. Model Caching with LM Studio on macOS
+If you downloaded `mlx-community/whisper-large-v3-mlx` inside LM Studio, the server automatically detects and loads from `~/.lmstudio/models/mlx-community/whisper-large-v3-mlx` to save disk space and bandwidth.
+
+### E. Dedicated macOS Unit Tests
+A dedicated test suite validates cross-platform macOS functionality without requiring Docker or CUDA:
+```powershell
+Invoke-Pester -Path ./tests/macos-crossplatform.Tests.ps1 -Output Detailed
+```
+Tests binary name resolution (`ffmpeg`/`curl`), hardware telemetry schemas (`sysctl`/`sw_vers`), `native-mlx` lifecycle handling, local config deep-merging, and cross-platform `Join-Path` path evaluation.
+
+---
+
+## 5. Docker & Backend Services Management
 
 ### Starting the WhisperX Service
 The execution engine automatically starts the container if stopped (`auto_restart_container: true`). To start it manually:
@@ -206,5 +250,8 @@ Invoke-ScriptAnalyzer -Path ./src -Recurse -Settings ./PSScriptAnalyzerSettings.
 | `Single speaker label covers both question and answer` | Trailing word stretched across pause into next speaker's turn by Wav2Vec2 | Inherent limitation of Wav2Vec2 forced alignment without VAD token. See detailed analysis in ADR 0010. |
 | `Accented characters stripped from text` | Windows-1252 / UTF-8 encoding mismatch in regex | Enforce UTF-8 without BOM (`$Utf8NoBom`) and use unicode escapes (`\u2013\u2014`) in regex cleaners. |
 | `MetadataError: parameter alias conflict` | Case-insensitive alias collision in PowerShell | Resolved in v06.01; ensure all parameters use clean, distinct aliases. |
+| `Transcription failed with exit code: 26` | `curl` interprets commas (`,`) in audio file path as multi-file delimiters | Fixed in v07.00: File paths passed to `curl` multipart arguments are safely wrapped in escaped quotes (`-F "audio_file=@\"$Path\""`). |
+| `Diarization failed: 'NoneType' object has no attribute 'to'` | Hugging Face gated access missing or token lacks permission | Accept user terms on **both** [pyannote/speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1) and [pyannote/segmentation-3.0](https://huggingface.co/pyannote/segmentation-3.0). Ensure token has "Read contents of gated repos you can access". |
+| `WeightsUnpickler error: Unsupported global: omegaconf.listconfig.ListConfig` | PyTorch 2.6 defaults `torch.load` to `weights_only=True` | Fixed in v07.00: `whisperx_mlx_server.py` registers safe OmegaConf globals and defaults `weights_only=False` for local model checkpoints. |
 | `PSScriptAnalyzer warnings` | Formatting or syntax violation | Run `Invoke-ScriptAnalyzer -Path ./src` and fix flagged lines. |
 | `Processed audio file not found` / missing FFmpeg log warnings on files with `[...]` | PowerShell `-Path` treating square brackets as wildcard globbing pattern | Enforce `-LiteralPath` across all PowerShell provider cmdlets (`Test-Path`, `Get-Content`, `Move-Item`, `Get-Item`). Resolved in v06.04 (see ADR 0012). |
