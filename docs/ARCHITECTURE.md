@@ -1,6 +1,6 @@
 # WHISPER Technical Architecture & Design
 
-This document details the end-to-end technical architecture, data processing pipeline, profile definitions, and service integrations of the **WHISPER** project (v07.00).
+This document details the end-to-end technical architecture, data processing pipeline, profile definitions, and service integrations of the **WHISPER** project (v07.01).
 
 ---
 
@@ -102,6 +102,12 @@ Each profile applies specialized DSP filter chains to optimize voice clarity bef
 For conversational telephone calls (`phone` profile), initial utterances often suffer from boundary edge defects in PyAnnote's sliding receptive window, leaving opening greetings unassigned (`speaker: null`).
 * **FFmpeg Priming**: Setting `"lead_in_silence_seconds": 1.5` prepends `adelay=1500:all=1` to the preprocessed audio sent to WhisperX.
 * **Timestamp Compensation**: The engine's `Adjust-TranscriptTimestamps` function subtracts 1.5s from all segment and word start/end timestamps (clamped to 0.0s) before generating `.json`, `.txt`, `.srt`, `.vtt`, and `.tsv` files, maintaining exact time alignment with the original media.
+
+### Demuxer Resilience, Truncated Cutfile Recovery & Video Bypass (-vn)
+As documented in [ADR 0016](file:///d:/_DOCUMENTS/_SCRIPTS/WHISPER/docs/adr/0016-ffmpeg-demuxer-resilience-and-video-stream-bypass.md), input video recordings often originate from cut-points (`.cutfile.`) or network/external mounts (`/Volumes/_VIDEO`):
+* **Single-Core Audio Processing Invariant**: Audio filtergraphs (`dynaudnorm`, `loudnorm`) and MP3 compression (`libmp3lame`) execute strictly on the CPU across a single thread; GPUs do not process audio filtergraphs.
+* **Video Stream Bypass (`-vn`)**: Instructs FFmpeg to bypass parsing and decoding high-resolution (1080p, 1440p/2K, 4K) video streams, eliminating multi-gigabyte container demuxing overhead.
+* **Demuxer Fault Tolerance (`-err_detect ignore_err -fflags +genpts+igndts+discardcorrupt`)**: Prevents fatal aborts or 90+ second EOF demuxer freezes when encountering corrupt AAC packets, truncated bitstreams, or missing end elements (`decode_band_types: Input buffer exhausted before END element found`), accelerating sustained preprocessing throughput from ~7.8x to 22.7x–25x real-time speed.
 
 ---
 
@@ -351,4 +357,26 @@ On Apple Silicon, unified memory is shared dynamically between CPU, GPU, and sys
    - The server exports `HF_TOKEN` into `os.environ["HF_TOKEN"]` and `os.environ["HUGGING_FACE_HUB_TOKEN"]` so downstream `huggingface_hub` requests inherit authentication.
 4. **SpeechBrain Optional Module Traceback Protection**:
    - Patched `speechbrain.utils.importutils.LazyModule.__getattr__` to prevent traceback formatting exceptions when optional third-party integrations (such as `k2_fsa`) are absent.
+
+---
+
+## 11. FFmpeg Demuxer Resilience & Video Stream Bypass Architecture
+
+As documented in [ADR 0016](file:///d:/_DOCUMENTS/_SCRIPTS/WHISPER/docs/adr/0016-ffmpeg-demuxer-resilience-and-video-stream-bypass.md), v07.01 incorporates demuxer resilience and video stream bypass optimizations directly into the execution engine.
+
+### A. Operational Bottleneck Analysis
+When processing large video files (1080p, 1440p/2K, 4K) on Windows and macOS:
+1. **Container Demuxing Overhead**: Video streams constitute 95%+ of container data. Without explicit bypass, FFmpeg parses every video packet even when writing pure MP3 audio.
+2. **Truncated Bitstream Stalls**: Files produced by video trimming or cutting tools (`.cutfile.`) often end on incomplete AAC audio packets. Standard demuxer routines freeze waiting for disk read timeouts or retry loops, resulting in 90+ second delays at the end of files.
+3. **Hardware Utilization Reality**: Audio DSP algorithms and LAME MP3 encoding run on single-threaded CPU routines. CPU usage appears low (6%–8% of system total) while the dedicated audio core operates at capacity.
+
+### B. Architectural Solution
+```text
+$ffmpegBin -err_detect ignore_err -fflags +genpts+igndts+discardcorrupt -i "$FilePath" -vn -af "$ffmpegFilter" $FfMpegOutputParams -ac 1 -ar 16000 "$TempProcessedFile" -y
+```
+* **`-vn`**: Drops video packets immediately at the demuxer interface.
+* **`-err_detect ignore_err`**: Tolerates non-fatal container defects and truncated trailing packets.
+* **`-fflags +discardcorrupt+genpts+igndts`**: Drops corrupt packets without stalling, ignores non-monotonic decode timestamps, and regenerates presentation timestamps (`pts`) to maintain synchronization with PyAnnote diarization.
+* **Results**: Sustained audio conversion speeds increased from ~7.8x to 22.7x–25x real-time speed, eliminating EOF stalls while preserving audio profile filter fidelity.
+
 

@@ -4,6 +4,26 @@ All notable changes to the WHISPER project are documented in this file. The proj
 
 ---
 
+## [v07.01] - 2026-11-23
+### Added
+* **Architecture Decision Record 0016** (`docs/adr/0016-ffmpeg-demuxer-resilience-and-video-stream-bypass.md`):
+  * Architectural documentation evaluating audio DSP single-core CPU constraints, cumulative speed averaging curves, video container demuxing overhead, and truncated cutfile recovery.
+
+### Fixed
+* **FFmpeg Demuxer Stalls on Truncated Cutfiles & External Mounts**:
+  * Added input demuxing flags `-err_detect ignore_err -fflags +genpts+igndts+discardcorrupt` to the FFmpeg audio extraction stage in `src/whisper-asr-service-docker.ps1`. Prevents fatal decoder aborts, 90+ second EOF demuxer freezes, and I/O timeout stalls when processing trimmed video recordings (`.cutfile.`) or external storage mounts (`/Volumes/_VIDEO`).
+* **High-Resolution Video Container Demuxing Overhead**:
+  * Added `-vn` (disable video) to the FFmpeg command string. Drops video stream parsing (1080p, 1440p/2K, 4K) at the demuxer interface, reducing I/O contention and accelerating sustained conversion throughput from ~7.8x to 22.7x–25x real-time speed.
+
+### Changed
+* **Canonical Version Bump to v07.01**:
+  * Updated `$ScriptVersionNumber = "v07.01"` in `src/whisper-asr-service-docker.ps1`.
+  * Updated Comment-Based Help version metadata to `v07.01` in `src/_MASTER_WHISPER.ps1` and `src/whisper-asr-service-docker.ps1`.
+  * Updated test suite assertions in `tests/macos-crossplatform.Tests.ps1`.
+  * Synchronized operational and architecture documentation across `README.md`, `docs/ARCHITECTURE.md`, `docs/WORKFLOW_GUIDE.md`, `AGENTS.md`, and `GEMINI.md`.
+
+---
+
 ## [v07.00] - 2026-11-23
 ### Added
 * **Architecture Decision Record 0015** (`docs/adr/0015-macos-apple-silicon-mlx-mps-hybrid-architecture.md`):

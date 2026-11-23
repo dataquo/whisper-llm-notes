@@ -31,11 +31,11 @@ WHISPER/
 ├── docs/
 │   ├── ARCHITECTURE.md          # End-to-end technical architecture & diagrams
 │   ├── WORKFLOW_GUIDE.md        # Operations & troubleshooting guide
-│   └── adr/                     # Architectural Decision Records (0001-0014)
+│   └── adr/                     # Architectural Decision Records (0001-0016)
 ├── .github/workflows/
 │   ├── ci.yml                   # PSScriptAnalyzer + Pester 5/6 CI pipeline
 │   └── release.yml              # Automated release packaging on tag push
-├── CHANGELOG.md                 # Full release history from v01.00 to v07.00
+├── CHANGELOG.md                 # Full release history from v01.00 to v07.01
 ├── GEMINI.md                    # Active rules (NO automatic git commits/pushes)
 └── README.md                    # Project overview & quickstart
 ```
@@ -99,7 +99,7 @@ WHISPER/
 * **Regex Encoding Safety**: All regex pattern cleaning (such as in `Clean-TranscriptText`) must use explicit unicode escape sequences (e.g. `\u2013\u2014`) rather than literal em-dashes to avoid stripping Czech/Slovak diacritics under Windows default code pages.
 
 ### E. Script Versioning & Runtime Telemetry Auditing
-* **Canonical Script Version**: Maintain explicit constant `$ScriptVersionNumber = "v07.00"` and `$ScriptName = "whisper-asr-service-docker.ps1"`. Never re-introduce filename-based versioning for scripts inside `src/`.
+* **Canonical Script Version**: Maintain explicit constant `$ScriptVersionNumber = "v07.01"` and `$ScriptName = "whisper-asr-service-docker.ps1"`. Never re-introduce filename-based versioning for scripts inside `src/`.
 * **Telemetry Logging Invariants**: Both initial logs (`New-TranscriptionLog`) and completion summaries (`Write-CompletionSummary`) must write separate `"script_name"` and `"script_version"` properties.
 * **Container Metadata Forwarding (`Get-WhisperContainerMetadata`)**: Always forward `$PipelineConfig` into container inspection so machine-level overrides (`config.local.json`) are respected. Maintain the 3-tier inspection strategy (configured Docker inspect $\to$ candidate fallback $\to$ HTTP `/openapi.json`) to guarantee zero-null telemetry logs.
 * **LLM Service Version Auditing**: When integrating LLM summarization endpoints, query `/api/version` (guarded by a $\le 2\text{s}$ timeout) and record service version rows in markdown parameter tables.
@@ -113,6 +113,11 @@ WHISPER/
 * **PyTorch 2.6+ Checkpoint Safety**: In Python services, PyTorch 2.6 defaults `torch.load` to `weights_only=True`. Always register safe globals (`omegaconf.listconfig.ListConfig`, `dictconfig.DictConfig`) and allow `weights_only=False` fallback on trusted local checkpoints to avoid breaking Silero VAD and PyAnnote Diarization.
 * **`native-mlx` Container Lifecycle**: When `$PipelineConfig.whisper_service.docker_container_name` is set to `"native-mlx"`, the engine skips Docker CLI calls (`docker inspect`, `docker restart`), retrieves container metadata via `GET /openapi.json`, and flushes Unified Memory via `POST /gc`.
 * **Dedicated macOS Tests**: Cross-platform abstractions and `native-mlx` workflows are tested in `tests/macos-crossplatform.Tests.ps1`.
+
+### G. FFmpeg Audio Demuxing, Video Bypass & Resilience Invariants
+* **Video Stream Bypass (`-vn`)**: Always specify `-vn` prior to audio filter processing in execution engine commands. Video streams in high-resolution recordings (1080p, 1440p/2K, 4K) must never be demuxed or decoded into RAM during audio extraction.
+* **Corrupted Packet & Cutfile Demuxer Tolerance**: Prepend `-err_detect ignore_err -fflags +genpts+igndts+discardcorrupt` to input arguments (`-i`). This prevents fatal demuxer abortions and 90+ second EOF freezing on truncated cutfile media (`.cutfile.`) or external storage read timeouts (`/Volumes/...`).
+* **Audio Profile & Normalization Invariants**: Audio DSP filters (`dynaudnorm`, `speechnorm`, `loudnorm`) and MP3 compression (`libmp3lame`) execute exclusively on a single CPU core (GPU utilization is expected to be 0%). Never strip loudness normalization (`-16 LUFS`, `TP=-1.5`) or profile filter chains to gain raw conversion speed; acoustic normalization is essential for ASR transcription stability and PyAnnote diarization accuracy (ADR 0016).
 
 ---
 

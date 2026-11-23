@@ -53,14 +53,14 @@ Describe "macOS and Cross-Platform Compatibility Tests (v07.00)" {
         }
     }
 
-    Context "Canonical Script Version (v07.00)" {
-        It "Matches canonical script version v07.00 in engine" {
-            $match = $EngineContent -match '\$ScriptVersionNumber\s*=\s*"v07\.00"'
+    Context "Canonical Script Version (v07.01)" {
+        It "Matches canonical script version v07.01 in engine" {
+            $match = $EngineContent -match '\$ScriptVersionNumber\s*=\s*"v07\.01"'
             $match | Should -BeTrue
         }
 
-        It "Mentions v07.00 in master orchestrator Comment-Based Help" {
-            $match = $MasterContent -match 'Version:\s*v07\.00'
+        It "Mentions v07.01 in master orchestrator Comment-Based Help" {
+            $match = $MasterContent -match 'Version:\s*v07\.01'
             $match | Should -BeTrue
         }
     }

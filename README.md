@@ -3,7 +3,7 @@
 [![CI Pipeline](https://github.com/dataquo/WHISPER/actions/workflows/ci.yml/badge.svg)](https://github.com/dataquo/WHISPER/actions/workflows/ci.yml)
 [![PowerShell 7.0+](https://img.shields.io/badge/PowerShell-7.0%2B-blue.svg)](https://github.com/PowerShell/PowerShell)
 [![Docker](https://img.shields.io/badge/Docker-WhisperX-2496ED.svg)](https://www.docker.com/)
-[![Version](https://img.shields.io/badge/Version-v07.00-brightgreen.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-v07.01-brightgreen.svg)](CHANGELOG.md)
 
 A resilient, high-throughput batch audio transcription and AI summarization pipeline powered by **PowerShell 7+**, **FFmpeg**, **WhisperX (Docker & Apple MLX)**, **Ollama**, and **LM Studio**.
 
@@ -24,6 +24,7 @@ A resilient, high-throughput batch audio transcription and AI summarization pipe
   * **`hallway` (`H`)**: Corridor / CCTV microphone filter chain (HP 220Hz, LP 3700Hz, `afftdn`, 380Hz notch EQ) paired with Slovak fine-tuned model (`kinit-sk`).
   * **`echoed` (`E`)**: Specialized reverberation profile with greedy ASR decoding (`beam_size=1`, `repetition_penalty=1.2`) to suppress echoing hallucination loops across all languages.
   * **Multi-Channel Compatibility**: Automatically downmixes multi-channel audio (e.g. 5.1, 7.1 HE-AAC) to mono 16 kHz.
+* **FFmpeg Demuxer Resilience & Video Bypass**: Automatically bypasses video stream demuxing (`-vn`) and recovers from corrupted packets or truncated streams on clipped media (`.cutfile.`) via `-err_detect ignore_err -fflags +genpts+igndts+discardcorrupt`, eliminating 90+ second EOF freezes and boosting audio preprocessing to 20x–25x real-time speed.
 * **Lead-in Silence & Sub-Second Timestamp Synchronization**: Prepends configurable lead-in silence margins to prime PyAnnote's temporal receptive field, with automatic sub-second offset subtraction across all 5 generated formats (.json, .txt, .srt, .vtt, .tsv).
 * **Speaker Diarization & Multi-Format Export**: Generates `.json`, `.txt`, `.srt`, `.vtt`, and `.tsv` in a single GPU pass with stutter deduplication.
 * **Context-Aware Dual AI Summarization**:
@@ -63,14 +64,14 @@ WHISPER/
 ├── docs/
 │   ├── ARCHITECTURE.md          # End-to-end technical architecture & diagrams
 │   ├── WORKFLOW_GUIDE.md        # Operations, troubleshooting & developer runbook
-│   └── adr/                     # Architecture Decision Records (0001–0015)
+│   └── adr/                     # Architecture Decision Records (0001–0016)
 ├── macos/                       # macOS Apple Silicon (M2 Max) native GPU backend
 │   ├── whisperx_mlx_server.py   # Hybrid FastAPI server (Metal MLX + MPS PyTorch)
 │   ├── setup_macos.sh           # Automated environment and virtualenv bootstrap
 │   ├── convert_kinit_sk_to_mlx.py # Model conversion utility for Slovak weights
 │   ├── requirements-macos.txt   # Pinned Apple Silicon dependencies
 │   └── .env.example             # Hugging Face token template
-├── CHANGELOG.md                 # Release history and changelog (v01.00 to v07.00)
+├── CHANGELOG.md                 # Release history and changelog (v01.00 to v07.01)
 ├── AGENTS.md                    # Operating guidelines for AI coding agents
 ├── GEMINI.md                    # Project rules & manual Git policies
 ├── PSScriptAnalyzerSettings.psd1 # Linter rule definitions

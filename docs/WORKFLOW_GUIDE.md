@@ -1,6 +1,6 @@
 # WHISPER Operational Runbook & Workflow Guide
 
-This guide provides practical instructions for daily operations, troubleshooting, testing, and developing within the **WHISPER** repository (v07.00).
+This guide provides practical instructions for daily operations, troubleshooting, testing, and developing within the **WHISPER** repository (v07.01).
 
 ---
 
@@ -255,3 +255,5 @@ Invoke-ScriptAnalyzer -Path ./src -Recurse -Settings ./PSScriptAnalyzerSettings.
 | `WeightsUnpickler error: Unsupported global: omegaconf.listconfig.ListConfig` | PyTorch 2.6 defaults `torch.load` to `weights_only=True` | Fixed in v07.00: `whisperx_mlx_server.py` registers safe OmegaConf globals and defaults `weights_only=False` for local model checkpoints. |
 | `PSScriptAnalyzer warnings` | Formatting or syntax violation | Run `Invoke-ScriptAnalyzer -Path ./src` and fix flagged lines. |
 | `Processed audio file not found` / missing FFmpeg log warnings on files with `[...]` | PowerShell `-Path` treating square brackets as wildcard globbing pattern | Enforce `-LiteralPath` across all PowerShell provider cmdlets (`Test-Path`, `Get-Content`, `Move-Item`, `Get-Item`). Resolved in v06.04 (see ADR 0012). |
+| `FFmpeg stalls at EOF with 'Packet corrupt', 'partial file', or 'Input/output error'` | Truncated video cut-point (`.cutfile.`) or external storage read timeout at end of stream | Handled automatically in v07.01 via `-err_detect ignore_err -fflags +genpts+igndts+discardcorrupt` and `-vn` (see ADR 0016). Non-fatal corrupt packets are dropped immediately. |
+| `Audio conversion speed starts at ~25x but slows to ~7x` | FFmpeg cumulative speed averaging, single-core CPU DSP limits, or external drive (`/Volumes/...`) bus saturation | Audio DSP runs on 1 CPU core; reading/writing to external drives saturates USB/network bandwidth. Using `-vn` (v07.01) bypasses video demuxing, sustaining 20x–25x on local SSDs. |

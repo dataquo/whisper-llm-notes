@@ -97,7 +97,8 @@
     Performs only WhisperX audio transcription and secondary formats, bypassing LLM processing.
 
 .NOTES
-    Version: v07.00
+    Version: v07.01
+    - FFmpeg Demuxer Resilience & Video Bypass: Execution engine incorporates -vn and -err_detect ignore_err -fflags +genpts+igndts+discardcorrupt to safely handle corrupted/truncated cutfiles and accelerate audio preprocessing.
     - Cross-Platform macOS Apple Silicon (M2 Max) Support: Enables native batch orchestration and engine delegation across Windows 11 and macOS pwsh environments.
     - Path Standardization: Enforced Join-Path across all transcript checks, missing file evaluation, and candidate resolution to prevent literal backslash artifacts on Unix systems.
     - Integrated external DJI video conversion invocation (..\DJI\convert_DJI_videos_with_MetaData.ps1) using profile 'special-quality-hw-dec-cuda' without audio silence detection.
