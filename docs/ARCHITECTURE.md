@@ -328,7 +328,7 @@ flowchart TD
         OL["Ollama (gemma3:4b, ~3.3 GB)\nGenerates .SUMMARY.md"]
     end
 
-    PS -->|"curl multipart upload\n(audio_file=@\"path\")"| API
+    PS -->|"curl multipart upload\n(audio_file=@'path')"| API
     API --> S1
     S1 --> S2
     S2 --> S3
