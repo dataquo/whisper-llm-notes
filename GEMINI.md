@@ -9,7 +9,7 @@
 ## 🏛️ Architectural Decoupling & Single Source of Truth
 * **Single Source of Truth**: All PowerShell code lives exclusively in `src/`. Never create duplicate scripts in the root directory.
 * **Orchestrator Separation**: `src/_MASTER_WHISPER.ps1` is **ONLY** a batch orchestrator (folder scanning, parameter parsing, output checking, and external companion script delegation). NEVER put Docker lifecycle, container management, FFmpeg DSP, or config loading into `_MASTER_WHISPER.ps1`.
-* **External Pre-Processing & Duplicate Suppression**: Orchestrates `..\DJI\convert_DJI_videos_with_MetaData.ps1` via candidate resolution and bypass switch (`-SkipDJI`). Automatically suppresses converted WebM outputs (`*.CRF-*_LIBSVT-AV1*.webm`) when original media exists to eliminate double transcription.
+* **External Pre-Processing & Duplicate Suppression**: Orchestrates `..\DJI\convert_DJI_videos_with_MetaData.ps1` via candidate resolution and bypass switch (`-SkipDJI`). Automatically selects platform-appropriate hardware decoding (`special-quality-hw-opt-Apple_M2` on macOS vs `special-quality-hw-dec-cuda` on Windows), configurable via `-DjiScene` (alias `-DjiProfile`). Automatically suppresses converted WebM outputs (`*.CRF-*_LIBSVT-AV1*.webm`) when original media exists to eliminate double transcription.
 * **Execution Engine**: `src/whisper-asr-service-docker.ps1` is the self-contained execution engine handling single files, configuration layering, container lifecycle, FFmpeg DSP, WhisperX ASR, and LLM summarization.
 
 ## ⚙️ Configuration Layering & Deterministic Lifecycle
@@ -18,22 +18,23 @@
 * **Deterministic Restarts**: Container lifecycle (`Ensure-WhisperContainerRunning`, `Restart-WhisperContainer`) strictly uses `$AppConfig.whisper_service.docker_container_name` and polls `/docs` or `/health` for readiness.
 
 ## 📊 Runtime Telemetry & Container Metadata Auditing
-* **Explicit Version Logging**: Maintain split `"script_name"` and `"script_version"` (`v07.01`) in all `.log` outputs; never revert to unversioned filename fallback.
+* **Explicit Version Logging**: Maintain split `"script_name"` and `"script_version"` (`v07.02`) in all `.log` outputs; never revert to unversioned filename fallback.
 * **Resilient Container Metadata**: `Get-WhisperContainerMetadata` must forward `$PipelineConfig` and use multi-tier inspection (Docker inspect $\to$ candidate scan fallback $\to$ HTTP `/openapi.json`) to guarantee zero-null telemetry logs.
 * **Silence & Zero-Speech Pipeline Invariants**: Empty segment responses from WhisperX (`segments.Count -eq 0`) must never abort script execution. Generate valid blank transcripts to avoid infinite retry loops in batch directory scans (ADR 0013).
 * **Untagged Filename Warnings**: Maintain high-visibility red warnings (`-ForegroundColor Red`) whenever a media file lacks profile tagging or explicit CLI parameters.
+* **Anti-Hallucination ASR Decoding**: Maintain `"condition_on_previous_text": false` on `meeting` profiles and low SNR audio. Autoregressive prompt-conditioning must not be used on silence or muted recordings to prevent infinite `"Thank you"` / `"Thanks for watching"` cascades. Enforce active speech duration floor in Stage 0 VAD and prune unaligned phantom tokens upon forced alignment backtrack failures (ADR 0017).
 
 ## 📁 Filesystem & Special Character Invariants
 * **Strict `-LiteralPath` Standard**: Always use `-LiteralPath` on all file provider cmdlets (`Test-Path`, `Get-Content`, `Move-Item`, `Get-Item`, `Remove-Item`) so brackets `[ ]` and capture tags in media filenames (e.g. `[DQ] [PD] Meet...`) are never mishandled as PowerShell wildcard patterns (ADR 0012).
-* **Curl Multipart Escaping**: Always enclose file paths in escaped double-quotes within curl arguments (`-F "audio_file=@`"$TempProcessedFile`""`). Unquoted paths containing commas, semicolons, brackets, or spaces cause curl to treat them as multiple file parameters, triggering `curl: (26) Failed to open/read local data from file`.
+* **Curl Multipart Escaping & Forward Slash UNC Normalization**: Always enclose file paths in escaped double-quotes within curl arguments (`-F "audio_file=@`"$curlUploadFile`""`) AND normalize Windows backslashes to forward slashes (`$curlUploadFile = $TempProcessedFile -replace '\\', '/'`). This prevents multi-file delimiter splitting on commas and eliminates Windows `curl.exe` argument unescaping corruptions where `@"\\` collapses into invalid UNC roots (`\server\share`), both of which trigger `curl: (26) Failed to open/read local data from file`.
 * **Universal Path Separators**: Use `Join-Path` instead of manual string concatenation with backslashes so paths evaluate correctly on both Windows and Unix filesystems.
 
 ## 🍏 Cross-Platform macOS Apple Silicon Invariants
 * **Dual-Platform Architecture**: Supports Windows 11 (CUDA Docker) and macOS Apple Silicon (M1/M2/M3/M4 via `macos/whisperx_mlx_server.py`).
 * **Platform-Agnostic Binaries**: Resolve binaries via `Get-PlatformBinaryName` (`ffmpeg.exe`/`curl.exe` on Windows, `ffmpeg`/`curl` on macOS).
 * **Native MLX Lifecycle (`native-mlx`)**: When `docker_container_name` is `"native-mlx"`, the engine bypasses Docker CLI commands, obtains metadata from `/openapi.json`, and flushes Unified Memory via `POST /gc`.
-* **PyTorch 2.6+ Compatibility**: In Python services, register safe globals for OmegaConf and allow `weights_only=False` fallback to prevent unpickling crashes in Silero VAD and PyAnnote Diarization.
-* **Hugging Face Gated Model Access**: PyAnnote 3.1 requires accepted terms on both `pyannote/speaker-diarization-3.1` and `pyannote/segmentation-3.0`, and token permissions granting gated repo read access.
+* **PyTorch 2.6+ Compatibility**: In Python services, register safe globals for OmegaConf and force `weights_only=False` on trusted checkpoints to prevent unpickling crashes in Silero VAD and PyAnnote Diarization.
+* **Hugging Face Classic Read Token Requirement**: PyAnnote 3.1 dynamically downloads sub-dependencies (`pyannote/wespeaker-voxceleb-resnet34-LM`). Narrow fine-grained tokens fail; require a **Classic Read Token** in `macos/.env` and accepted terms on both `pyannote/speaker-diarization-3.1` and `pyannote/segmentation-3.0`.
 
 ## 🔊 Audio Preprocessing & FFmpeg Demuxer Resilience
 * **Video Stream Bypass (`-vn`)**: Always specify `-vn` prior to audio filter processing in execution engine commands. Video streams in high-resolution recordings (1080p, 1440p/2K, 4K) must never be demuxed or decoded into RAM during audio extraction.

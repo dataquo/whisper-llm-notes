@@ -1,4 +1,4 @@
-Describe "macOS and Cross-Platform Compatibility Tests (v07.00)" {
+Describe "macOS and Cross-Platform Compatibility Tests (v07.02)" {
     BeforeAll {
         $EngineScriptPath = Join-Path $PSScriptRoot "..\src\whisper-asr-service-docker.ps1"
         $MasterScriptPath = Join-Path $PSScriptRoot "..\src\_MASTER_WHISPER.ps1"
@@ -53,14 +53,14 @@ Describe "macOS and Cross-Platform Compatibility Tests (v07.00)" {
         }
     }
 
-    Context "Canonical Script Version (v07.01)" {
-        It "Matches canonical script version v07.01 in engine" {
-            $match = $EngineContent -match '\$ScriptVersionNumber\s*=\s*"v07\.01"'
+    Context "Canonical Script Version (v07.02)" {
+        It "Matches canonical script version v07.02 in engine" {
+            $match = $EngineContent -match '\$ScriptVersionNumber\s*=\s*"v07\.02"'
             $match | Should -BeTrue
         }
 
-        It "Mentions v07.01 in master orchestrator Comment-Based Help" {
-            $match = $MasterContent -match 'Version:\s*v07\.01'
+        It "Mentions v07.02 in master orchestrator Comment-Based Help" {
+            $match = $MasterContent -match 'Version:\s*v07\.02'
             $match | Should -BeTrue
         }
     }

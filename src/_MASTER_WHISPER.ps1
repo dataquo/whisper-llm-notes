@@ -45,9 +45,10 @@
     -----------------------------------------------------------------------------
     Before audio scanning and transcription, the orchestrator checks for the DJI video
     conversion script ('..\DJI\convert_DJI_videos_with_MetaData.ps1'). If present, it invokes
-    it with profile 'special-quality-hw-dec-cuda' and silence detection disabled ('0') on the
-    target input directory to transcode DJI recordings with metadata prior to ASR.
-    This step can be bypassed with the -SkipDJI switch.
+    it with hardware-optimized profile ('special-quality-hw-opt-Apple_M2' on macOS with
+    VideoToolbox or 'special-quality-hw-dec-cuda' on Windows with Nvidia CUDA) and silence
+    detection disabled ('0') on the target input directory to transcode DJI recordings with
+    metadata prior to ASR. Custom scenes can be passed via -DjiScene, or bypassed with -SkipDJI.
 
 .PARAMETER InputFolder
     Path to the directory containing audio recordings. Defaults to '.' (current working directory).
@@ -76,6 +77,11 @@
     Optional explicit path to the DJI video conversion script (convert_DJI_videos_with_MetaData.ps1).
     Defaults to candidate resolution at '..\DJI\convert_DJI_videos_with_MetaData.ps1'.
 
+.PARAMETER DjiScene
+    Optional explicit conversion profile/scene for the DJI video conversion script
+    (e.g., 'special-quality-hw-opt-Apple_M2', 'special-quality-hw-dec-cuda', 'day', 'night').
+    Defaults dynamically to 'special-quality-hw-opt-Apple_M2' on macOS and 'special-quality-hw-dec-cuda' on Windows.
+
 .EXAMPLE
     .\_MASTER_WHISPER.ps1 -InputFolder "D:\Recordings"
     Scans 'D:\Recordings', executes DJI video conversion if script is present, and runs full pipeline (ASR + LM Studio notes + Ollama summary) for all pending files.
@@ -97,7 +103,10 @@
     Performs only WhisperX audio transcription and secondary formats, bypassing LLM processing.
 
 .NOTES
-    Version: v07.01
+    Version: v07.02
+    - Dynamic Cross-Platform DJI Scene Resolution: Automatically defaults to 'special-quality-hw-opt-Apple_M2' (VideoToolbox) on macOS and 'special-quality-hw-dec-cuda' (CUDA) on Windows, with -DjiScene CLI override.
+    - Anti-Hallucination ASR Decoding Invariant: Configured condition_on_previous_text=false across meeting profile and execution pipeline to eliminate runaway "Thank you." hallucination loops on silent screen captures and muted recordings.
+    - UNC Network Share Forward-Slash Normalization: Resolves curl exit code 26 on Windows by normalizing SMB paths (\\truenas\... -> //truenas/...) preventing quote-escaping corruption.
     - FFmpeg Demuxer Resilience & Video Bypass: Execution engine incorporates -vn and -err_detect ignore_err -fflags +genpts+igndts+discardcorrupt to safely handle corrupted/truncated cutfiles and accelerate audio preprocessing.
     - Cross-Platform macOS Apple Silicon (M2 Max) Support: Enables native batch orchestration and engine delegation across Windows 11 and macOS pwsh environments.
     - Path Standardization: Enforced Join-Path across all transcript checks, missing file evaluation, and candidate resolution to prevent literal backslash artifacts on Unix systems.
@@ -128,7 +137,9 @@ param(
     [switch]$OnlyLMStudio,
     [Alias("NoDJI", "SkipDJIConversion")]
     [switch]$SkipDJI,
-    [string]$DjiScriptPath = $null
+    [string]$DjiScriptPath = $null,
+    [Alias("DjiProfile")]
+    [string]$DjiScene = $null
 )
 
 # Helper function to determine which MD files need generation
@@ -268,6 +279,7 @@ function Invoke-DjiConversion {
     param(
         [string]$TargetFolder,
         [string]$ExplicitScriptPath = $null,
+        [string]$Scene = $null,
         [switch]$Skip
     )
 
@@ -292,14 +304,22 @@ function Invoke-DjiConversion {
         $TargetFolder
     }
 
+    $resolvedScene = if (-not [string]::IsNullOrWhiteSpace($Scene)) {
+        $Scene
+    } elseif ($IsMacOS) {
+        "special-quality-hw-opt-Apple_M2"
+    } else {
+        "special-quality-hw-dec-cuda"
+    }
+
     Write-Host "================ DJI Video Conversion ================" -ForegroundColor Cyan
     Write-Host "Invoking: $resolvedScript" -ForegroundColor Gray
     Write-Host "Source Folder: $resolvedFolder" -ForegroundColor Gray
-    Write-Host "Profile (Scene): special-quality-hw-dec-cuda" -ForegroundColor Gray
+    Write-Host "Profile (Scene): $resolvedScene" -ForegroundColor Gray
     Write-Host "Audio Silence Detection: disabled (0)" -ForegroundColor Gray
 
     try {
-        & $resolvedScript -sourceFolder $resolvedFolder -scene "special-quality-hw-dec-cuda" -checkAudioSilence "0"
+        & $resolvedScript -sourceFolder $resolvedFolder -scene $resolvedScene -checkAudioSilence "0"
         Write-Host "--- DJI Video Conversion Complete ---" -ForegroundColor Cyan
         return $true
     } catch {
@@ -315,7 +335,7 @@ Write-Host "=============== Master Whisper Script ===============" -ForegroundCo
 Write-Host "Scanning folder: $InputFolder" -ForegroundColor Yellow
 
 # Step 1: Pre-process DJI videos with external script if available
-Invoke-DjiConversion -TargetFolder $InputFolder -ExplicitScriptPath $DjiScriptPath -Skip:$SkipDJI
+Invoke-DjiConversion -TargetFolder $InputFolder -ExplicitScriptPath $DjiScriptPath -Scene $DjiScene -Skip:$SkipDJI
 
 # Step 2: Get files from top-level only (non-recursive) that need processing
 $AudioFiles = @()

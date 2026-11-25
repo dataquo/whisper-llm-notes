@@ -1,4 +1,4 @@
-Describe "Whisper ASR Service Docker Tests" {
+﻿Describe "Whisper ASR Service Docker Tests" {
     BeforeAll {
         $ScriptPath = Join-Path $PSScriptRoot "..\src\whisper-asr-service-docker.ps1"
         if (-not (Test-Path $ScriptPath)) {
@@ -329,6 +329,18 @@ Describe "Whisper ASR Service Docker Tests" {
             $config = Get-PipelineConfig -ScriptDirectory $scriptDir
             $config.profiles.phone.lead_in_silence_seconds | Should -Be 1.5
             $config.profiles.meeting.lead_in_silence_seconds | Should -Be 0.0
+        }
+    }
+
+    Context "Curl Multipart File Path Normalization (UNC and Special Characters)" {
+        It "Converts Windows backslashes and UNC network share paths to forward slashes for curl" {
+            $uncPath = "\\truenas\_DOWNLOADS\_TEMP\_Screen_Recordings_Original\008\meeting recording [DQ].mp3"
+            $normalized = $uncPath -replace '\\', '/'
+            $normalized | Should -Be "//truenas/_DOWNLOADS/_TEMP/_Screen_Recordings_Original/008/meeting recording [DQ].mp3"
+            
+            $localPath = "C:\Users\test,user\Recordings\audio file.mp3"
+            $normalizedLocal = $localPath -replace '\\', '/'
+            $normalizedLocal | Should -Be "C:/Users/test,user/Recordings/audio file.mp3"
         }
     }
 }

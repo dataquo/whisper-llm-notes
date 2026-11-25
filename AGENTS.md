@@ -31,11 +31,11 @@ WHISPER/
 ├── docs/
 │   ├── ARCHITECTURE.md          # End-to-end technical architecture & diagrams
 │   ├── WORKFLOW_GUIDE.md        # Operations & troubleshooting guide
-│   └── adr/                     # Architectural Decision Records (0001-0016)
+│   └── adr/                     # Architectural Decision Records (0001-0017)
 ├── .github/workflows/
 │   ├── ci.yml                   # PSScriptAnalyzer + Pester 5/6 CI pipeline
 │   └── release.yml              # Automated release packaging on tag push
-├── CHANGELOG.md                 # Full release history from v01.00 to v07.01
+├── CHANGELOG.md                 # Full release history from v01.00 to v07.02
 ├── GEMINI.md                    # Active rules (NO automatic git commits/pushes)
 └── README.md                    # Project overview & quickstart
 ```
@@ -58,7 +58,7 @@ WHISPER/
 * **`src/_MASTER_WHISPER.ps1` (Pure Batch Orchestrator)**:
   * Responsible **ONLY** for:
     1. Scanning input directories for media files (`.m4a`, `.flac`, `.mp4`, `.mp3`, `.webm`).
-    2. Orchestrating external video pre-processing (`..\DJI\convert_DJI_videos_with_MetaData.ps1`) via `Get-DjiScriptPath` and `Invoke-DjiConversion`.
+    2. Orchestrating external video pre-processing (`..\DJI\convert_DJI_videos_with_MetaData.ps1`) via `Get-DjiScriptPath` and `Invoke-DjiConversion`, dynamically selecting the platform hardware decoding profile (`special-quality-hw-opt-Apple_M2` on macOS vs `special-quality-hw-dec-cuda` on Windows), configurable via `-DjiScene` (alias `-DjiProfile`).
     3. Suppressing duplicate converted video outputs (`*.CRF-*_LIBSVT-AV1*.webm`) when original source media exists.
     4. Extracting parameters from filename conventions (`.LL-X#`), with transcode suffix normalization.
     5. Checking which transcript/summary files (`.json`, `.txt`, `.srt`, `.tsv`, `.vtt`, `.NOTES.md`, `.SUMMARY.md`) are missing or empty.
@@ -92,6 +92,7 @@ WHISPER/
 ### C. Language Guards & ASR Decoding Guidelines
 * **Language-Specific Model Guard**: Fine-tuned models targeting a single language (such as `whisper-large-v3-kinit-sk-ct2` for Slovak) must NEVER be applied to other languages (`cs`, `en`, etc.). The engine automatically intercepts non-matching languages and redirects them to multilingual `large-v3`.
 * **Reverberation & CCTV Decoding Constraints**: On muffled or reverberant audio, standard beam search can generate severe hallucination loops. Always utilize greedy search (`beam_size=1`), `condition_on_previous_text=false`, and `repetition_penalty=1.2` (as configured in the `echoed` profile).
+* **Anti-Hallucination ASR Decoding Invariant (`condition_on_previous_text=false`)**: In environments with low SNR, quiet meeting pauses, or muted screen recording microphones, dynamic normalization (`dynaudnorm`) elevates ambient noise floor. Whisper's autoregressive decoder must NEVER condition on previous text in `meeting` profiles (`condition_on_previous_text: false`), as prompt-conditioning triggers infinite cascades of polite hallucinated phrases (`"Thank you"`, `"Thanks for watching"`). Furthermore, Stage 0 VAD enforces an active speech duration floor (`total_speech >= 0.5s`), and Stage 2 forced alignment prunes unaligned phantom tokens upon alignment backtrack failures (ADR 0017).
 
 ### D. Speaker Diarization, Receptive Boundary Priming & Timestamp Integrity
 * **No Script-Level Speaker Backfilling**: Never write post-hoc heuristics or guessing loops in PowerShell to reassign or backfill speaker IDs. Diarization must be generated faithfully by WhisperX and PyAnnote.
@@ -99,7 +100,7 @@ WHISPER/
 * **Regex Encoding Safety**: All regex pattern cleaning (such as in `Clean-TranscriptText`) must use explicit unicode escape sequences (e.g. `\u2013\u2014`) rather than literal em-dashes to avoid stripping Czech/Slovak diacritics under Windows default code pages.
 
 ### E. Script Versioning & Runtime Telemetry Auditing
-* **Canonical Script Version**: Maintain explicit constant `$ScriptVersionNumber = "v07.01"` and `$ScriptName = "whisper-asr-service-docker.ps1"`. Never re-introduce filename-based versioning for scripts inside `src/`.
+* **Canonical Script Version**: Maintain explicit constant `$ScriptVersionNumber = "v07.02"` and `$ScriptName = "whisper-asr-service-docker.ps1"`. Never re-introduce filename-based versioning for scripts inside `src/`.
 * **Telemetry Logging Invariants**: Both initial logs (`New-TranscriptionLog`) and completion summaries (`Write-CompletionSummary`) must write separate `"script_name"` and `"script_version"` properties.
 * **Container Metadata Forwarding (`Get-WhisperContainerMetadata`)**: Always forward `$PipelineConfig` into container inspection so machine-level overrides (`config.local.json`) are respected. Maintain the 3-tier inspection strategy (configured Docker inspect $\to$ candidate fallback $\to$ HTTP `/openapi.json`) to guarantee zero-null telemetry logs.
 * **LLM Service Version Auditing**: When integrating LLM summarization endpoints, query `/api/version` (guarded by a $\le 2\text{s}$ timeout) and record service version rows in markdown parameter tables.
@@ -109,8 +110,9 @@ WHISPER/
 ### F. Cross-Platform Execution & macOS Apple Silicon Invariants
 * **Dual-Platform Architecture**: The codebase supports both Windows 11 (NVIDIA CUDA via Docker) and macOS Apple Silicon (M1/M2/M3/M4 via native `macos/whisperx_mlx_server.py`).
 * **Platform-Agnostic Binaries & Paths**: Never hardcode `.exe` extensions or literal backslashes (`\`). Always resolve binaries via `Get-PlatformBinaryName` and combine paths using `Join-Path`.
-* **Curl Multipart Quoting**: When passing file paths to `curl` multipart arguments (`-F`), always enclose the path in escaped double-quotes (`-F "audio_file=@`"$TempProcessedFile`""`). Unquoted paths containing commas, semicolons, or spaces cause curl to treat them as multi-file delimiters, resulting in `curl: (26) Failed to open/read local data from file`.
-* **PyTorch 2.6+ Checkpoint Safety**: In Python services, PyTorch 2.6 defaults `torch.load` to `weights_only=True`. Always register safe globals (`omegaconf.listconfig.ListConfig`, `dictconfig.DictConfig`) and allow `weights_only=False` fallback on trusted local checkpoints to avoid breaking Silero VAD and PyAnnote Diarization.
+* **Curl Multipart Quoting & UNC Forward-Slash Normalization**: When passing file paths to `curl` multipart arguments (`-F`), always enclose the path in escaped double-quotes (`-F "audio_file=@`"$curlUploadFile`""`) AND normalize all backslashes to forward slashes (`$curlUploadFile = $TempProcessedFile -replace '\\', '/'`). On Windows, unquoted paths containing commas cause multi-file delimiter splitting, while Windows `curl.exe` argument unescaping corrupts UNC backslashes (`@"\\` $\to$ `\server\share`), both triggering `curl: (26) Failed to open/read local data from file`. Win32 APIs and curl natively support forward slashes for UNC shares (`//server/share/...`).
+* **PyTorch 2.6+ Checkpoint Safety**: In Python services, PyTorch 2.6 defaults `torch.load` to `weights_only=True`. Always register safe globals (`omegaconf.listconfig.ListConfig`, `dictconfig.DictConfig`, etc.) and enforce `weights_only=False` fallback on trusted local checkpoints to avoid breaking Silero VAD and PyAnnote Diarization.
+* **Hugging Face Classic Read Token Requirement**: PyAnnote 3.1 dynamically loads unlisted sub-dependencies (`pyannote/wespeaker-voxceleb-resnet34-LM`). Narrow Fine-Grained tokens fail with `'NoneType' object has no attribute 'to'`. Always require a **Classic Read Token** placed in canonical `WHISPER/macos/.env`, with accepted terms on both `pyannote/speaker-diarization-3.1` and `segmentation-3.0`.
 * **`native-mlx` Container Lifecycle**: When `$PipelineConfig.whisper_service.docker_container_name` is set to `"native-mlx"`, the engine skips Docker CLI calls (`docker inspect`, `docker restart`), retrieves container metadata via `GET /openapi.json`, and flushes Unified Memory via `POST /gc`.
 * **Dedicated macOS Tests**: Cross-platform abstractions and `native-mlx` workflows are tested in `tests/macos-crossplatform.Tests.ps1`.
 

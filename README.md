@@ -3,7 +3,7 @@
 [![CI Pipeline](https://github.com/dataquo/WHISPER/actions/workflows/ci.yml/badge.svg)](https://github.com/dataquo/WHISPER/actions/workflows/ci.yml)
 [![PowerShell 7.0+](https://img.shields.io/badge/PowerShell-7.0%2B-blue.svg)](https://github.com/PowerShell/PowerShell)
 [![Docker](https://img.shields.io/badge/Docker-WhisperX-2496ED.svg)](https://www.docker.com/)
-[![Version](https://img.shields.io/badge/Version-v07.01-brightgreen.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-v07.02-brightgreen.svg)](CHANGELOG.md)
 
 A resilient, high-throughput batch audio transcription and AI summarization pipeline powered by **PowerShell 7+**, **FFmpeg**, **WhisperX (Docker & Apple MLX)**, **Ollama**, and **LM Studio**.
 
@@ -13,7 +13,9 @@ A resilient, high-throughput batch audio transcription and AI summarization pipe
 
 * **Cross-Platform Execution (Windows 11 & macOS Apple Silicon M2 Max)**: Runs with 100% native GPU acceleration on both Windows 11 (NVIDIA CUDA via Docker) and macOS (Apple Silicon M2 Max via native `mlx-whisper` Metal GPU and PyTorch MPS). Single PowerShell codebase for both operating systems.
 * **Smart Batch Orchestration**: Automatically scans folders for media files, inspects existing output formats, and executes only missing stages without redundant re-transcriptions.
-* **External Video Pre-Processing Orchestration**: Integrates companion video conversion (`..\DJI\convert_DJI_videos_with_MetaData.ps1`) to transcode high-resolution captures via SVT-AV1 preset 2 (`CRF 44`), Opus audio, and hardware CUDA decoding prior to ASR. Includes smart duplicate suppression for converted `.webm` files and bypass control via `-SkipDJI`.
+* **External Video Pre-Processing Orchestration**: Integrates companion video conversion (`..\DJI\convert_DJI_videos_with_MetaData.ps1`) to transcode high-resolution captures via SVT-AV1 preset 2 (`CRF 44`), Opus audio, and dynamic hardware decoding (Apple VideoToolbox on macOS, NVIDIA CUDA on Windows) prior to ASR. Includes smart duplicate suppression for converted `.webm` files and CLI control via `-SkipDJI` and `-DjiScene`.
+* **Multi-Tier Anti-Hallucination ASR Decoding**: Automatically prevents runaway hallucination loops (e.g. infinite `"Thank you"` or `"Thanks for watching"` cascades on muted recordings or quiet pauses) via `condition_on_previous_text: false`, `hallucination_silence_threshold=2.0`, Stage 0 VAD duration flooring, and Stage 2 forced alignment phantom segment pruning.
+* **Network Storage & UNC Share Resilience**: Automatically normalizes Windows network share paths to forward slashes (`//server/share/...`) for `curl.exe` multipart uploads, eliminating `curl: (26)` argument corruption when processing audio from TrueNAS or SMB shares.
 * **Intelligent Filename Tagging**: Automatically detects language, DSP profile, and speaker counts directly from file naming patterns (e.g. `recording.SK-E2.mp4`), resilient against video transcode suffixes (`.CRF-44_LIBSVT-AV1...`).
 * **High-Visibility Terminal Alerts**: Emits prominent red warnings whenever media files lack profile tagging, notifying users that defaults are being applied and encouraging standard convention.
 * **Resilient Silence & Zero-Speech Handling**: Patched WhisperX VAD pipeline and PowerShell output generators prevent crashes on quiet or silent audio, gracefully outputting blank transcripts without stalling folder batches.
@@ -64,14 +66,14 @@ WHISPER/
 ├── docs/
 │   ├── ARCHITECTURE.md          # End-to-end technical architecture & diagrams
 │   ├── WORKFLOW_GUIDE.md        # Operations, troubleshooting & developer runbook
-│   └── adr/                     # Architecture Decision Records (0001–0016)
+│   └── adr/                     # Architecture Decision Records (0001–0017)
 ├── macos/                       # macOS Apple Silicon (M2 Max) native GPU backend
 │   ├── whisperx_mlx_server.py   # Hybrid FastAPI server (Metal MLX + MPS PyTorch)
 │   ├── setup_macos.sh           # Automated environment and virtualenv bootstrap
 │   ├── convert_kinit_sk_to_mlx.py # Model conversion utility for Slovak weights
 │   ├── requirements-macos.txt   # Pinned Apple Silicon dependencies
 │   └── .env.example             # Hugging Face token template
-├── CHANGELOG.md                 # Release history and changelog (v01.00 to v07.01)
+├── CHANGELOG.md                 # Release history and changelog (v01.00 to v07.02)
 ├── AGENTS.md                    # Operating guidelines for AI coding agents
 ├── GEMINI.md                    # Project rules & manual Git policies
 ├── PSScriptAnalyzerSettings.psd1 # Linter rule definitions

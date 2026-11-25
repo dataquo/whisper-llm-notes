@@ -251,7 +251,28 @@ Param(
             $success | Should -BeTrue
             Test-Path -LiteralPath $paramLog | Should -BeTrue
             $loggedParams = Get-Content -LiteralPath $paramLog -Raw
-            $loggedParams | Should -Match "scene=special-quality-hw-dec-cuda"
+            $expectedScene = if ($IsMacOS) { "special-quality-hw-opt-Apple_M2" } else { "special-quality-hw-dec-cuda" }
+            $loggedParams | Should -Match "scene=$expectedScene"
+            $loggedParams | Should -Match "checkAudioSilence=0"
+        }
+
+        It "Respects explicit Scene parameter override in Invoke-DjiConversion" {
+            $mockDjiScript = Join-Path $TestDjiDir "mock_dji_custom.ps1"
+            $paramLog = Join-Path $TestDjiDir "params_custom.log"
+            $scriptContent = @"
+Param(
+    [string]`$sourceFolder,
+    [string]`$scene,
+    [string]`$checkAudioSilence
+)
+"sourceFolder=`$sourceFolder|scene=`$scene|checkAudioSilence=`$checkAudioSilence" | Out-File -FilePath "$paramLog" -Encoding UTF8
+"@
+            Set-Content -LiteralPath $mockDjiScript -Value $scriptContent -Encoding UTF8
+            $success = Invoke-DjiConversion -TargetFolder $TestDjiDir -ExplicitScriptPath $mockDjiScript -Scene "special-quality-hw-opt-Apple_M2"
+            $success | Should -BeTrue
+            Test-Path -LiteralPath $paramLog | Should -BeTrue
+            $loggedParams = Get-Content -LiteralPath $paramLog -Raw
+            $loggedParams | Should -Match "scene=special-quality-hw-opt-Apple_M2"
             $loggedParams | Should -Match "checkAudioSilence=0"
         }
     }

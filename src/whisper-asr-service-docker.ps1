@@ -275,7 +275,14 @@ v07.00
 v07.01
 - FFmpeg Demuxer Resilience & Truncated Cutfile Guard: Added input options `-err_detect ignore_err -fflags +genpts+igndts+discardcorrupt` to gracefully bypass corrupted packets, missing EOF end elements, and demuxer I/O timeouts on truncated recording cutfiles.
 - Video Stream Demuxing Bypass (-vn): Explicitly disabled video stream processing during audio extraction, avoiding I/O overhead from demuxing high-resolution (1080p/2K/4K) video frames.
-- Audio Preprocessing Acceleration: Eliminated tail-end I/O hangs (speeding up conversion from ~6x-8x to 22x-25x real-time sustained throughput) while preserving all DSP normalization invariants.#>
+- Audio Preprocessing Acceleration: Eliminated tail-end I/O hangs (speeding up conversion from ~6x-8x to 22x-25x real-time sustained throughput) while preserving all DSP normalization invariants.
+
+v07.02
+- UNC Network Share Forward-Slash Normalization: Normalizes Windows SMB paths to forward slashes ($curlUploadFile = $TempProcessedFile -replace '\\', '/') before passing to curl, eliminating quote-escaping collision (curl exit code 26) on \\truenas\... network shares.
+- Anti-Hallucination ASR Decoding Baseline: Configured condition_on_previous_text=false in meeting profile to prevent silence and low-energy noise from triggering cascading "Thank you." hallucination loops.
+- Native MLX Anti-Hallucination & Gated Token Safety: Enforced condition_on_previous_text=False default, hallucination_silence_threshold=2.0, active speech floor, and phantom token pruning in macos/whisperx_mlx_server.py.
+- PyTorch 2.6+ OmegaConf Unpickler Hardening: Added all OmegaConf classes to safe_globals and enforced weights_only=False for trusted local checkpoints.
+- Dynamic Hub Diagnostics: Verified user identity and gated repo access (pyannote 3.1 & segmentation 3.0) on server startup.#>
 
 
 
@@ -1028,7 +1035,7 @@ if ($ExtractedParams.SpeakerCount) {
 
 # --- 2b. Script Version Detection ---
 
-$ScriptVersionNumber = "v07.01"
+$ScriptVersionNumber = "v07.02"
 
 $ScriptName = if ($MyInvocation.MyCommand.Path) {
     [System.IO.Path]::GetFileName($MyInvocation.MyCommand.Path)
@@ -1659,10 +1666,12 @@ if (-not (Test-Path -LiteralPath "$FullBase.json")) {
     
     try {
         $curlBin = Get-PlatformBinaryName "curl"
-        # Build curl arguments for multipart upload (quote file path to safely handle commas, spaces, and brackets)
+        # Normalize slashes to forward slashes for curl file path to prevent UNC double-backslash
+        # escaping corruption (e.g. \\truenas\... -> curl exit code 26) while safely handling commas and spaces
+        $curlUploadFile = $TempProcessedFile -replace '\\', '/'
         $curlArgs = @(
             "-s", "-X", "POST", "$FullUrl",
-            "-F", "audio_file=@`"$TempProcessedFile`""
+            "-F", "audio_file=@`"$curlUploadFile`""
         )
         
         # Execute curl command

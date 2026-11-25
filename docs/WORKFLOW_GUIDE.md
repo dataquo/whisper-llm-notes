@@ -1,6 +1,6 @@
 # WHISPER Operational Runbook & Workflow Guide
 
-This guide provides practical instructions for daily operations, troubleshooting, testing, and developing within the **WHISPER** repository (v07.01).
+This guide provides practical instructions for daily operations, troubleshooting, testing, and developing within the **WHISPER** repository (v07.02).
 
 ---
 
@@ -29,7 +29,7 @@ To transcribe all pending recordings in a folder:
 pwsh -File .\src\_MASTER_WHISPER.ps1 -InputFolder "D:\Recordings\2026-August"
 ```
 
-* The script automatically invokes `..\DJI\convert_DJI_videos_with_MetaData.ps1` with profile `special-quality-hw-dec-cuda` and `-checkAudioSilence "0"` prior to scanning.
+* The script automatically invokes `..\DJI\convert_DJI_videos_with_MetaData.ps1` with dynamic platform-aware hardware decoding (`special-quality-hw-opt-Apple_M2` on macOS or `special-quality-hw-dec-cuda` on Windows) and `-checkAudioSilence "0"` prior to scanning.
 * The script automatically skips any audio file whose transcripts (`.json`, `.txt`, `.srt`, `.tsv`, `.vtt`, `.NOTES.md`, `.SUMMARY.md`) already exist and are non-empty.
 * Converted WebM files (`*.CRF-*_LIBSVT-AV1*.webm`) are automatically suppressed if original source media is present.
 * If only markdown notes are missing, it selectively runs LLM inference without re-running audio transcription.
@@ -45,6 +45,12 @@ pwsh -File .\src\_MASTER_WHISPER.ps1 -InputFolder "D:\Recordings\2026-August"
   ```powershell
   pwsh -File .\src\_MASTER_WHISPER.ps1 -InputFolder "D:\Recordings" -DjiScriptPath "C:\Tools\convert_DJI_videos_with_MetaData.ps1"
   ```
+
+* **Custom DJI Video Conversion Scene / Profile**:
+  ```powershell
+  pwsh -File .\src\_MASTER_WHISPER.ps1 -InputFolder "D:\Recordings" -DjiScene "special-quality-hw-opt-Apple_M2"
+  ```
+  *(Aliases: `-DjiScene`, `-DjiProfile`)*
 
 ### Selective LLM Execution Switches
 * **Only Ollama Summary (`.SUMMARY.md`)**:
@@ -127,11 +133,20 @@ Starting with **v07.00**, WHISPER runs natively on **macOS Apple Silicon (M1/M2/
 
 ### A. Prerequisites & One-Command Setup
 1. Clone or pull the repository on your Mac.
-2. Ensure you have your Hugging Face read token ready (either extract from your Windows Portainer container or from [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens)).
-3. Run the automated setup script:
+2. Ensure you have your Hugging Face read token ready.
+   > [!IMPORTANT]
+   > **Use a Classic Read Token (NOT a Fine-Grained Token)**: PyAnnote 3.1 is a composite pipeline that dynamically downloads sub-dependencies (e.g. `pyannote/wespeaker-voxceleb-resnet34-LM`). Fine-grained tokens restricting access to only `speaker-diarization-3.1` and `segmentation-3.0` fail at runtime. Generate a **Classic Token** with **Read** permission at [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens).
+   > Also ensure you have accepted the user conditions on **both** gated models:
+   > 1. [pyannote/speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1)
+   > 2. [pyannote/segmentation-3.0](https://huggingface.co/pyannote/segmentation-3.0)
+3. Set your token in the canonical configuration file at `macos/.env`:
+   ```bash
+   echo 'HF_TOKEN="hf_your_classic_token_here"' > ./macos/.env
+   ```
+4. Run the automated setup script:
    ```bash
    chmod +x ./macos/setup_macos.sh
-   export HF_TOKEN="hf_your_token_here"
+   export HF_TOKEN="hf_your_classic_token_here"
    ./macos/setup_macos.sh
    ```
    * Installs `ffmpeg`, `pwsh`, and `python3` via Homebrew if missing.
@@ -250,8 +265,12 @@ Invoke-ScriptAnalyzer -Path ./src -Recurse -Settings ./PSScriptAnalyzerSettings.
 | `Single speaker label covers both question and answer` | Trailing word stretched across pause into next speaker's turn by Wav2Vec2 | Inherent limitation of Wav2Vec2 forced alignment without VAD token. See detailed analysis in ADR 0010. |
 | `Accented characters stripped from text` | Windows-1252 / UTF-8 encoding mismatch in regex | Enforce UTF-8 without BOM (`$Utf8NoBom`) and use unicode escapes (`\u2013\u2014`) in regex cleaners. |
 | `MetadataError: parameter alias conflict` | Case-insensitive alias collision in PowerShell | Resolved in v06.01; ensure all parameters use clean, distinct aliases. |
-| `Transcription failed with exit code: 26` | `curl` interprets commas (`,`) in audio file path as multi-file delimiters | Fixed in v07.00: File paths passed to `curl` multipart arguments are safely wrapped in escaped quotes (`-F "audio_file=@\"$Path\""`). |
-| `Diarization failed: 'NoneType' object has no attribute 'to'` | Hugging Face gated access missing or token lacks permission | Accept user terms on **both** [pyannote/speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1) and [pyannote/segmentation-3.0](https://huggingface.co/pyannote/segmentation-3.0). Ensure token has "Read contents of gated repos you can access". |
+| `Transcription failed with exit code: 26` (commas in path) | `curl` interprets commas (`,`) in audio file path as multi-file delimiters | Fixed in v07.00: File paths passed to `curl` multipart arguments are safely wrapped in escaped quotes (`-F "audio_file=@\"$Path\""`). |
+| `Transcription failed with exit code: 26` (Windows UNC shares) | Windows `curl.exe` argument unescaping turns `@"\\` into an escaped quote sequence, corrupting UNC roots (`\server\share`) | Fixed in v07.02: Paths are normalized to forward slashes (`//server/share/...`) prior to curl invocation. Windows natively resolves forward-slash UNC paths. |
+| `Whole recording transcribes into one line: "Thank you"` or repeats "Thanks for watching" | Low SNR audio amplified by `dynaudnorm` triggers Whisper's hallucination cascade when `condition_on_previous_text=true` | Fixed in v07.02: Disabled `condition_on_previous_text`, set `hallucination_silence_threshold=2.0`, added speech floor in Stage 0 VAD, and pruned unaligned phantom tokens after alignment. |
+| `Device creation failed: -12 ... device type cuda needed for codec h264` | `_MASTER_WHISPER.ps1` hardcoded `-scene special-quality-hw-dec-cuda` on macOS | Fixed in v07.02: Master orchestrator dynamically selects `special-quality-hw-opt-Apple_M2` on macOS and `special-quality-hw-dec-cuda` on Windows. |
+| `Diarization failed: 'NoneType' object has no attribute 'to'` | Fine-grained Hugging Face token lacks access to sub-dependency `pyannote/wespeaker-voxceleb-resnet34-LM` or terms not accepted | Use a **Classic Read Token** at [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens). Also accept user terms on both `speaker-diarization-3.1` and `segmentation-3.0`. |
+| `[HF Token Auth Failed] Invalid user token` | Stale or unquoted token in root `.env` or missing permissions | Ensure token is placed in `macos/.env` without extra quotes or spaces. Check startup banner diagnostics. |
 | `WeightsUnpickler error: Unsupported global: omegaconf.listconfig.ListConfig` | PyTorch 2.6 defaults `torch.load` to `weights_only=True` | Fixed in v07.00: `whisperx_mlx_server.py` registers safe OmegaConf globals and defaults `weights_only=False` for local model checkpoints. |
 | `PSScriptAnalyzer warnings` | Formatting or syntax violation | Run `Invoke-ScriptAnalyzer -Path ./src` and fix flagged lines. |
 | `Processed audio file not found` / missing FFmpeg log warnings on files with `[...]` | PowerShell `-Path` treating square brackets as wildcard globbing pattern | Enforce `-LiteralPath` across all PowerShell provider cmdlets (`Test-Path`, `Get-Content`, `Move-Item`, `Get-Item`). Resolved in v06.04 (see ADR 0012). |

@@ -41,6 +41,7 @@
       "vad_onset": 0.5,
       "vad_offset": 0.363,
       "lead_in_silence_seconds": 0.0,
+      "condition_on_previous_text": false,
       "ffmpeg_filters": "highpass=f=80,lowpass=f=8000,dynaudnorm=f=150:g=15,loudnorm=I=-16:TP=-1.5:LRA=11"
     },
     "distant": {

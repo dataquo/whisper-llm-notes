@@ -4,6 +4,44 @@ All notable changes to the WHISPER project are documented in this file. The proj
 
 ---
 
+## [v07.02] - 2026-11-25
+### Added
+* **Architecture Decision Record 0017** (`docs/adr/0017-cross-platform-dji-hallucination-suppression-unc-resilience.md`):
+  * Architectural documentation covering cross-platform video transcoding (VideoToolbox vs. CUDA), anti-hallucination ASR decoding (`condition_on_previous_text=false`), UNC network share path normalization, and Hugging Face token resolution for composite PyAnnote pipelines.
+* **Dynamic Platform Detection for DJI Video Transcoding**:
+  * In `src/_MASTER_WHISPER.ps1`, `Invoke-DjiConversion` automatically selects `special-quality-hw-opt-Apple_M2` (Apple VideoToolbox) on macOS and `special-quality-hw-dec-cuda` (NVIDIA CUDA) on Windows, eliminating fatal FFmpeg hardware decoder initialization failures on Apple Silicon.
+  * Added parameter `-DjiScene` (alias `-DjiProfile`) to `src/_MASTER_WHISPER.ps1` to allow explicit scene overrides directly from the batch orchestrator CLI.
+* **Anti-Hallucination ASR Decoding Architecture**:
+  * Configured `"condition_on_previous_text": false` in `config/config.default.json` for the `meeting` profile and enforced it as the default in `macos/whisperx_mlx_server.py`. Decouples 30-second window prompt conditioning to prevent low-SNR ambient noise from locking the autoregressive decoder into infinite hallucination loops.
+  * Passed `hallucination_silence_threshold=2.0` and `no_speech_threshold=0.6` to `mlx_whisper.transcribe`.
+  * Added active speech duration floor (`total_speech >= 0.5s`) in Stage 0 VAD with polymorphic duration extraction (`_get_seg_duration`) handling tuples, dicts, and `pyannote.core.Segment` objects.
+  * Added Stage 2 post-alignment phonetic pruning: removes unaligned phantom segments (`"Thank you"`, `"Thanks for watching"`) when wav2vec2 backtrack fails or `no_speech_prob > 0.4`.
+* **Proactive Hugging Face Diagnostic Verification**:
+  * Added automatic credential and gated model accessibility checks during `macos/whisperx_mlx_server.py` startup, actively querying `whoami()` and checking access permissions for both `pyannote/speaker-diarization-3.1` and `pyannote/segmentation-3.0`.
+
+### Fixed
+* **Windows UNC Network Share Path Mangling in Curl (`exit code: 26`)**:
+  * In `src/whisper-asr-service-docker.ps1`, normalized file paths to forward slashes (`$curlUploadFile = $TempProcessedFile -replace '\\', '/'`) prior to constructing curl multipart arguments. Windows Win32 APIs and `curl.exe` natively accept forward slashes for UNC shares (`//server/share/...`), eliminating backslash escape collisions where `@"\\` was collapsed into `\server\share` (invalid UNC root).
+* **macOS Video Pre-Processing Failure (`-hwaccel cuda`)**:
+  * Fixed FFmpeg crash `Device creation failed: -12. No device available for decoder: device type cuda needed for codec h264` by dispatching the OS-appropriate VideoToolbox hardware profile on macOS.
+* **Single-Line "Thank You" Hallucination Collapse**:
+  * Fixed bug where screen recordings with silence or low-energy background noise amplified by `dynaudnorm` produced a single deduplicated line (`"Thank you"`) across an entire 19-minute video.
+* **Hugging Face Token Loading & Fine-Grained Token Incompatibility**:
+  * Standardized canonical token loading from `WHISPER/macos/.env` (with fallback to root `.env`), stripping accidental wrapping quotes.
+  * Documented the requirement for a **Classic Read Token** rather than narrow fine-grained tokens, because PyAnnote 3.1 dynamically downloads unlisted sub-dependencies (`pyannote/wespeaker-voxceleb-resnet34-LM`).
+* **PyTorch 2.6+ `WeightsUnpickler` Safety**:
+  * In `macos/whisperx_mlx_server.py`, enforced `kwargs["weights_only"] = False` on trusted checkpoints and registered all OmegaConf metadata classes (`ContainerMetadata`, `Node`, `Metadata`, etc.) into `torch.serialization.add_safe_globals`.
+
+### Changed
+* **Canonical Version Bump to v07.02**:
+  * Updated `$ScriptVersionNumber = "v07.02"` in `src/whisper-asr-service-docker.ps1`.
+  * Updated Comment-Based Help version metadata to `v07.02` in `src/_MASTER_WHISPER.ps1` and `src/whisper-asr-service-docker.ps1`.
+  * Updated service banner and OpenAPI version to `v07.02-mlx` in `macos/whisperx_mlx_server.py`.
+  * Updated test suite assertions in `tests/macos-crossplatform.Tests.ps1`, `tests/_MASTER_WHISPER.Tests.ps1`, and `tests/whisper-asr-service-docker.Tests.ps1`.
+  * Updated operational runbook and technical architecture documentation across `README.md`, `docs/ARCHITECTURE.md`, `docs/WORKFLOW_GUIDE.md`, `AGENTS.md`, and `GEMINI.md`.
+
+---
+
 ## [v07.01] - 2026-11-23
 ### Added
 * **Architecture Decision Record 0016** (`docs/adr/0016-ffmpeg-demuxer-resilience-and-video-stream-bypass.md`):

@@ -1,6 +1,6 @@
 # WHISPER Technical Architecture & Design
 
-This document details the end-to-end technical architecture, data processing pipeline, profile definitions, and service integrations of the **WHISPER** project (v07.01).
+This document details the end-to-end technical architecture, data processing pipeline, profile definitions, and service integrations of the **WHISPER** project (v07.02).
 
 ---
 
@@ -14,7 +14,7 @@ flowchart TD
     
     subgraph VideoPreProcessing["0. Optional External Video Pre-Processing"]
         B --> B1["Invoke-DjiConversion\n(convert_DJI_videos_with_MetaData.ps1)"]
-        B1 --> B2["AV1 Transcode (CRF 44, CUDA Dec)\n(.webm with Metadata)"]
+        B1 --> B2["AV1 Transcode (CRF 44, Dynamic HW Dec)\n(macOS: VideoToolbox / Win: CUDA)"]
         B2 --> B3["Duplicate Suppression\n(Exclude .webm if original .mp4 exists)"]
     end
 
@@ -26,16 +26,16 @@ flowchart TD
     subgraph EngineLifecycle["2. Engine & Container Management"]
         D --> E["whisper-asr-service-docker.ps1\n(Execution Engine)"]
         E --> F["Get-PipelineConfig\n(Deep Merge: default + local.json)"]
-        F --> G["Ensure-WhisperContainerRunning\n(docker start + /health poll)"]
+        F --> G["Ensure-WhisperContainerRunning\n(docker start or native-mlx /health poll)"]
     end
 
     subgraph AudioPreprocessing["3. Preprocessing (FFmpeg)"]
-        G --> H["FFmpeg Audio Pipeline\n(-ac 1 Mono + Bandwidth Filter + adelay Priming + Notch EQ + Loudnorm)"]
+        G --> H["FFmpeg Audio Pipeline\n(-vn + -err_detect ignore_err + -ac 1 Mono + Bandwidth Filter + adelay Priming + Notch EQ + Loudnorm)"]
         H --> I["Temp Preprocessed Audio\n(.WAV / .MP3 16kHz, Length > 1KB)"]
     end
     
-    subgraph ASRTranscription["4. Speech Recognition (WhisperX Docker)"]
-        I --> J["WhisperX API POST\n(http://localhost:9000/asr)"]
+    subgraph ASRTranscription["4. Speech Recognition (WhisperX Docker / MLX)"]
+        I --> J["WhisperX API POST (Curl)\n(Forward-slash UNC Normalized: //server/share)"]
         J --> K["Verbose JSON Response\n(Segments + Word Timestamps + Diarization)"]
         K --> K2["Adjust-TranscriptTimestamps\n(Compensate Lead-in Offset, Floor 0.0s)"]
     end
@@ -56,7 +56,7 @@ flowchart TD
     end
 
     subgraph ResourceOptimization["7. GPU Resource Cleanup"]
-        K --> U["Restart-WhisperContainer\n(docker restart & flush VRAM)"]
+        K --> U["Flush VRAM\n(docker restart or POST /gc on MLX)"]
         R & T --> V["Ollama Model VRAM Unload\n(ollama stop)"]
     end
 ```
@@ -68,7 +68,7 @@ flowchart TD
 The codebase enforces strict separation of concerns between batch folder iteration and single-file pipeline execution:
 
 ### A. `src/_MASTER_WHISPER.ps1` (Pure Batch Orchestrator)
-* **External Video Pre-Processing**: Invokes companion video transcode script `..\DJI\convert_DJI_videos_with_MetaData.ps1` with profile `special-quality-hw-dec-cuda` and `-checkAudioSilence "0"` prior to scanning. Configurable via `-SkipDJI` and `-DjiScriptPath`.
+* **External Video Pre-Processing**: Invokes companion video transcode script `..\DJI\convert_DJI_videos_with_MetaData.ps1` prior to scanning. Dynamically detects platform hardware: selects `special-quality-hw-opt-Apple_M2` (Apple VideoToolbox) on macOS and `special-quality-hw-dec-cuda` (NVIDIA CUDA) on Windows, passing `-checkAudioSilence "0"`. Supports custom overrides via `-DjiScene` (alias `-DjiProfile`), `-DjiScriptPath`, and `-SkipDJI`.
 * **Folder Scanning & Duplicate Suppression**: Discovers media files (`.m4a`, `.flac`, `.mp4`, `.mp3`, `.webm`), excluding intermediate normalized files and suppressing converted WebM files (`*.CRF-*_LIBSVT-AV1*.webm`) when the original source media is present.
 * **Suffix-Resilient Tag Parsing**: Normalizes transcode suffixes and extracts language, DSP profile, and speaker counts from filename tags (`file.LL-X#.ext`, supporting `P`, `M`, `D`, `H`, `E`).
 * **Missing Output Inspection**: Checks for existing `.json`, `.txt`, `.srt`, `.tsv`, `.vtt`, `.NOTES.md`, and `.SUMMARY.md` files.
@@ -378,5 +378,49 @@ $ffmpegBin -err_detect ignore_err -fflags +genpts+igndts+discardcorrupt -i "$Fil
 * **`-err_detect ignore_err`**: Tolerates non-fatal container defects and truncated trailing packets.
 * **`-fflags +discardcorrupt+genpts+igndts`**: Drops corrupt packets without stalling, ignores non-monotonic decode timestamps, and regenerates presentation timestamps (`pts`) to maintain synchronization with PyAnnote diarization.
 * **Results**: Sustained audio conversion speeds increased from ~7.8x to 22.7x–25x real-time speed, eliminating EOF stalls while preserving audio profile filter fidelity.
+
+---
+
+## 12. Cross-Platform Video Transcoding, Anti-Hallucination ASR Decoding, and UNC Path Normalization (v07.02)
+
+As documented in [ADR 0017](file:///d:/_DOCUMENTS/_SCRIPTS/WHISPER/docs/adr/0017-cross-platform-dji-hallucination-suppression-unc-resilience.md), v07.02 introduces targeted architectural enhancements to ensure complete cross-platform parity across Windows 11 (CUDA, TrueNAS SMB shares) and macOS Apple Silicon (M2 Max, VideoToolbox).
+
+### A. Dynamic Platform-Aware Video Pre-Processing
+In `src/_MASTER_WHISPER.ps1`, the companion DJI video pre-processing script (`convert_DJI_videos_with_MetaData.ps1`) is dispatched dynamically based on detected host architecture:
+* **macOS Apple Silicon**: Dispatches `-scene "special-quality-hw-opt-Apple_M2"`, activating Apple VideoToolbox hardware decoding while encoding in SVT-AV1. Bypasses the fatal CUDA initialization crash (`Device creation failed: -12`).
+* **Windows x86_64**: Dispatches `-scene "special-quality-hw-dec-cuda"`, utilizing NVIDIA CUDA hardware decoding.
+* **CLI Override**: `-DjiScene` (alias `-DjiProfile`) allows manual override of the transcode profile directly from `_MASTER_WHISPER.ps1`.
+
+### B. Multi-Tier Anti-Hallucination ASR Decoding
+Screen recordings with muted audio, silent meeting pauses, or low-SNR background noise can trigger runaway autoregressive hallucination loops when dynamic loudness normalization (`dynaudnorm`) elevates the ambient noise floor:
+1. **`condition_on_previous_text: false` Invariant**:
+   * Configured in `config/config.default.json` for the `meeting` profile and enforced as the default in `macos/whisperx_mlx_server.py`.
+   * **Why**: When Whisper hallucinates a polite filler phrase (`" Thank you."` or `" Thanks for watching."`) during silence, `condition_on_previous_text=true` feeds that hallucination as the prefix prompt for the subsequent 30-second window. This locks the decoder into an infinite cascade where every segment across an entire recording repeats the same phantom phrase. Setting this parameter to `false` decouples 30-second chunk prompts entirely, forcing the decoder to transcribe purely from acoustic evidence.
+2. **Silence & No-Speech Thresholding**:
+   * Passed `hallucination_silence_threshold=2.0` and `no_speech_threshold=0.6` to `mlx_whisper.transcribe`.
+3. **Stage 0 VAD Speech Floor**:
+   * Added an active speech duration floor (`total_speech >= 0.5s`) and a polymorphic duration extractor (`_get_seg_duration`) capable of parsing tuples, dictionaries, and `pyannote.core.Segment` objects. Zero-speech recordings short-circuit directly to empty transcript generation (ADR 0013).
+4. **Stage 2 Phonetic Alignment Pruning**:
+   * When wav2vec2 forced alignment fails on hallucinated tokens (`backtrack failed` / 0 aligned word phonemes) or `no_speech_prob > 0.4`, unaligned phantom segments (`"Thank you"`, `"Thanks for watching"`) are pruned from the final segment list.
+
+### C. Windows UNC Network Share Normalization (`//server/share`)
+When transcribing media residing on TrueNAS or SMB network shares via Windows UNC paths (`\\server\share\...`):
+* **The Problem**: In PowerShell, passing `@"\\server\share\..."` causes `curl.exe`'s unescaper to interpret `\"` as an escaped quotation character. This drops the leading backslash, mutating the root into `\server\share` (an invalid UNC format) and failing with `curl: (26) Failed to open/read local data from file/application`.
+* **The Architectural Fix**:
+  ```powershell
+  $curlUploadFile = $TempProcessedFile -replace '\\', '/'
+  $curlArgs = @("-s", "-S", "-F", "audio_file=@`"$curlUploadFile`"", "$ApiUrl`?$queryString")
+  ```
+* Windows Win32 file APIs and `curl.exe` natively resolve forward slashes for UNC shares (`//server/share/...`). This completely eliminates quote-escape collisions while preserving quotation safety around spaces, commas, and bracketed tags `[ ]`.
+
+### D. Hugging Face Token Resolution & Gated PyAnnote 3.1 Model Architecture
+* **Canonical Token File**: Standardized on `WHISPER/macos/.env` as the primary configuration file on macOS, with fallback to repository root `.env`.
+* **Classic Read Token Requirement**:
+  * PyAnnote 3.1 is a composite pipeline that dynamically loads unlisted sub-dependencies (specifically `pyannote/wespeaker-voxceleb-resnet34-LM` for speaker embeddings).
+  * Fine-grained Hugging Face tokens scoped only to `speaker-diarization-3.1` and `segmentation-3.0` fail at runtime with `'NoneType' object has no attribute 'to'`.
+  * A **Classic Read Token** is required to allow unrestricted read access across all composite pipeline dependencies.
+* **Proactive Startup Hub Verification**:
+  * On server initialization, `whisperx_mlx_server.py` queries `whoami()` and actively tests accessibility against both gated repositories (`pyannote/speaker-diarization-3.1` and `pyannote/segmentation-3.0`), displaying explicit diagnostic status banners before processing requests.
+
 
 

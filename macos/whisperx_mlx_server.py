@@ -38,14 +38,14 @@ except Exception:
     pass
 
 # In PyTorch 2.6+, torch.load default changed from weights_only=False to weights_only=True,
-# which breaks Silero VAD and PyAnnote model unpickling (omegaconf.listconfig.ListConfig).
+# which breaks Silero VAD and PyAnnote model unpickling (omegaconf.base.ContainerMetadata, ListConfig).
 try:
     import torch
     if hasattr(torch, "load"):
         _orig_torch_load = torch.load
         def _safe_torch_load(*args, **kwargs):
-            if "weights_only" not in kwargs:
-                kwargs["weights_only"] = False
+            # Always force weights_only=False for trusted local checkpoints and models
+            kwargs["weights_only"] = False
             return _orig_torch_load(*args, **kwargs)
         torch.load = _safe_torch_load
 except Exception:
@@ -55,32 +55,71 @@ try:
     import torch.serialization
     import omegaconf
     if hasattr(torch.serialization, "add_safe_globals"):
-        torch.serialization.add_safe_globals([
+        safe_classes = [
             omegaconf.listconfig.ListConfig,
             omegaconf.dictconfig.DictConfig
-        ])
+        ]
+        for attr in ("ContainerMetadata", "Node", "Metadata"):
+            if hasattr(omegaconf, "base") and hasattr(omegaconf.base, attr):
+                safe_classes.append(getattr(omegaconf.base, attr))
+        for attr in ("AnyNode", "StringNode", "IntegerNode", "BooleanNode", "FloatNode"):
+            if hasattr(omegaconf, "nodes") and hasattr(omegaconf.nodes, attr):
+                safe_classes.append(getattr(omegaconf.nodes, attr))
+        torch.serialization.add_safe_globals(safe_classes)
 except Exception:
     pass
 
-# Load environment variables if .env exists (check both macos/.env and repository root .env)
+# Load environment variables: inspect both repository root .env and macos/.env
+env_source = None
 try:
-    from dotenv import load_dotenv
-    candidates = [
-        Path(__file__).parent / ".env",
-        Path(__file__).parent.parent / ".env"
-    ]
-    for c in candidates:
-        if c.exists():
-            load_dotenv(dotenv_path=c, override=True)
+    from dotenv import dotenv_values, load_dotenv
+    root_env = (Path(__file__).parent.parent / ".env").resolve()
+    macos_env = (Path(__file__).parent / ".env").resolve()
+
+    # Determine which file has the most valid non-placeholder HF_TOKEN
+    chosen_file = None
+    candidate_tokens = {}
+
+    for cand in (macos_env, root_env):
+        if cand.exists():
+            vals = dotenv_values(cand)
+            tok = (vals.get("HF_TOKEN") or "").strip().strip("'\"")
+            if tok:
+                candidate_tokens[cand] = tok
+
+    # Pick candidate that is not placeholder 'hf_your_token_here'
+    for cand, tok in candidate_tokens.items():
+        if tok and not tok.startswith("hf_your_token") and len(tok) > 15:
+            chosen_file = cand
             break
+
+    if not chosen_file and candidate_tokens:
+        chosen_file = list(candidate_tokens.keys())[0]
+
+    if chosen_file:
+        load_dotenv(dotenv_path=chosen_file, override=True)
+        env_source = str(chosen_file)
+    elif macos_env.exists():
+        load_dotenv(dotenv_path=macos_env, override=True)
+        env_source = str(macos_env)
+    elif root_env.exists():
+        load_dotenv(dotenv_path=root_env, override=True)
+        env_source = str(root_env)
 except ImportError:
     pass
 
 HF_TOKEN = os.getenv("HF_TOKEN", None)
 if HF_TOKEN:
+    # Clean whitespace and accidental surrounding quotes
+    HF_TOKEN = HF_TOKEN.strip().strip("'\"")
     # Ensure downstream huggingface_hub and pyannote sub-modules inherit the token
     os.environ["HF_TOKEN"] = HF_TOKEN
     os.environ["HUGGING_FACE_HUB_TOKEN"] = HF_TOKEN
+    try:
+        from huggingface_hub import login
+        login(token=HF_TOKEN, add_to_git_credential=False)
+    except Exception:
+        pass
 WHISPER_KEEP_IN_MEMORY = os.getenv("WHISPER_KEEP_IN_MEMORY", "false").lower() in ("true", "1", "yes")
 MLX_MODEL_DEFAULT = os.getenv("MLX_MODEL_DEFAULT", "mlx-community/whisper-large-v3-mlx")
 MLX_MODEL_SLOVAK = os.getenv("MLX_MODEL_SLOVAK", "~/.cache/whisper-mlx/whisper-large-v3-kinit-sk-mlx")
@@ -136,20 +175,37 @@ def resolve_model_path(requested_model: str, language: Optional[str] = None) -> 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    masked_tok = f"{HF_TOKEN[:7]}...{HF_TOKEN[-4:]}" if (HF_TOKEN and len(HF_TOKEN) > 12) else ("None" if not HF_TOKEN else "Invalid")
+    source_label = Path(env_source).name if env_source else "environment"
     print(f"============================================================")
-    print(f" WhisperX MLX ASR Service Started (v07.00)")
+    print(f" WhisperX MLX ASR Service Started (v07.02)")
     print(f" Hardware: Apple M2 Max Metal GPU (Unified Memory)")
     print(f" PyTorch Backend: {get_torch_device().upper()}")
     print(f" Default MLX Model: {MLX_MODEL_DEFAULT}")
-    print(f" HF Token Available: {bool(HF_TOKEN)}")
+    print(f" HF Token: {masked_tok} (from {source_label})")
     print(f" Auto Memory Flush: {not WHISPER_KEEP_IN_MEMORY}")
+    if HF_TOKEN:
+        try:
+            from huggingface_hub import HfApi
+            api = HfApi(token=HF_TOKEN)
+            user_info = api.whoami()
+            username = user_info.get("name") or user_info.get("fullname") or "authenticated"
+            print(f" HF Account: @{username}")
+            for repo in ["pyannote/speaker-diarization-3.1", "pyannote/segmentation-3.0"]:
+                try:
+                    api.model_info(repo)
+                    print(f"   [Gated Model Access OK] {repo}")
+                except Exception as m_err:
+                    print(f"   [Gated Model Access DENIED] {repo} -> {m_err}")
+        except Exception as hf_err:
+            print(f" [HF Token Auth Failed] {hf_err}")
     print(f"============================================================")
     yield
 
 app = FastAPI(
     title="WhisperX MLX ASR Service",
     description="Drop-in native Apple Silicon (M2 Max) Metal/MPS GPU transcription service for WHISPER pipeline",
-    version="v07.00-mlx",
+    version="v07.02-mlx",
     lifespan=lifespan
 )
 
@@ -227,19 +283,40 @@ async def transcribe_audio(
         if vad_filter:
             try:
                 vad_model = whisperx.vad.load_vad_model(device_pt, vad_onset=vad_onset, vad_offset=vad_offset)
-                vad_segments = vad_model(audio_data)
-                if not vad_segments or len(vad_segments) == 0:
-                    print("[VAD] No speech detected in audio. Returning zero segments.")
+                # Pass temp_in_path or waveform tensor dict that pyannote expects (not bare numpy array)
+                try:
+                    vad_segments = vad_model(temp_in_path)
+                except Exception:
+                    vad_segments = vad_model({"waveform": torch.from_numpy(audio_data).unsqueeze(0), "sample_rate": 16000})
+
+                def _get_seg_duration(s):
+                    if isinstance(s, dict):
+                        return float(s.get('end', 0) - s.get('start', 0))
+                    elif isinstance(s, (tuple, list)):
+                        if len(s) >= 2 and isinstance(s[0], (int, float)) and isinstance(s[1], (int, float)):
+                            return float(s[1] - s[0])
+                        elif len(s) >= 1 and hasattr(s[0], 'start') and hasattr(s[0], 'end'):
+                            return float(s[0].end - s[0].start)
+                    elif hasattr(s, 'start') and hasattr(s, 'end'):
+                        return float(s.end - s.start)
+                    elif hasattr(s, 'duration'):
+                        return float(s.duration)
+                    return 0.0
+
+                total_speech = sum(_get_seg_duration(seg) for seg in vad_segments) if vad_segments else 0.0
+                if not vad_segments or len(vad_segments) == 0 or total_speech < 0.5:
+                    print(f"[VAD] No speech detected in audio (active speech: {total_speech:.2f}s). Returning zero segments.")
                     return {
                         "segments": [],
                         "word_segments": [],
-                        "language": language or "sk",
+                        "language": language or "en",
                         "duration": duration
                     }
             except Exception as vad_err:
                 print(f"[VAD Warning] VAD pre-filter encountered non-fatal error: {vad_err}")
 
         # Stage 1: Transcription using mlx-whisper on M2 Max Metal GPU
+        import inspect
         import mlx_whisper
         resolved_model = resolve_model_path(model, language=language)
         print(f"[ASR] Running mlx-whisper with model: '{resolved_model}' on M2 Max Metal GPU")
@@ -253,8 +330,20 @@ async def transcribe_audio(
             transcribe_kwargs["language"] = language
         if initial_prompt:
             transcribe_kwargs["initial_prompt"] = initial_prompt
+
+        # Anti-hallucination guard:
+        # Default condition_on_previous_text to False when not explicitly provided.
+        # When True, any hallucination on silence/noise (e.g. "Thank you.") cascades into an unbreakable infinite loop.
         if condition_on_previous_text is not None:
             transcribe_kwargs["condition_on_previous_text"] = condition_on_previous_text
+        else:
+            transcribe_kwargs["condition_on_previous_text"] = False
+
+        sig = inspect.signature(mlx_whisper.transcribe)
+        if "hallucination_silence_threshold" in sig.parameters:
+            transcribe_kwargs["hallucination_silence_threshold"] = 2.0
+        if "no_speech_threshold" in sig.parameters:
+            transcribe_kwargs["no_speech_threshold"] = 0.6
 
         asr_result = mlx_whisper.transcribe(audio_data, **transcribe_kwargs)
         detected_language = asr_result.get("language", language or "en")
@@ -288,6 +377,28 @@ async def transcribe_audio(
             # Free alignment model
             del align_model
             del align_metadata
+
+            # Prune silent hallucinated segments (e.g. "Thank you.", "Thanks for watching")
+            # where forced alignment failed (backtrack failed / empty words) or no_speech_prob is high
+            HALLUCINATION_PATTERNS = {
+                "thank you", "thank you.", "thank you very much", "thanks for watching",
+                "thanks for watching.", "thank you for watching", "thank you for watching.",
+                "subtitles by the amara.org community", "bye", "bye."
+            }
+            cleaned_segments = []
+            for seg in aligned_result.get("segments", []):
+                t_clean = seg.get("text", "").strip().lower()
+                if not t_clean:
+                    continue
+                is_known_hallucination = t_clean in HALLUCINATION_PATTERNS
+                words_list = seg.get("words", [])
+                has_aligned_words = bool(words_list and any("word" in w for w in words_list))
+                no_speech = seg.get("no_speech_prob", 0.0) > 0.4
+                if is_known_hallucination and (not has_aligned_words or no_speech):
+                    print(f"[ASR Filter] Pruned silent hallucination segment: '{seg.get('text')}'")
+                    continue
+                cleaned_segments.append(seg)
+            aligned_result["segments"] = cleaned_segments
         except Exception as align_err:
             print(f"[Alignment Warning] wav2vec2 alignment fallback to raw timestamps: {align_err}")
 
@@ -299,10 +410,16 @@ async def transcribe_audio(
             else:
                 try:
                     print(f"[Diarization] Running PyAnnote 3.1 diarization on {device_pt.upper()} (min={min_speakers}, max={max_speakers})")
-                    diarize_pipeline = whisperx.DiarizationPipeline(
-                        use_auth_token=HF_TOKEN,
-                        device=device_pt
-                    )
+                    dp_kwargs = {"device": device_pt}
+                    dp_sig = inspect.signature(whisperx.DiarizationPipeline.__init__)
+                    if "token" in dp_sig.parameters:
+                        dp_kwargs["token"] = HF_TOKEN
+                    elif "use_auth_token" in dp_sig.parameters:
+                        dp_kwargs["use_auth_token"] = HF_TOKEN
+                    else:
+                        dp_kwargs["use_auth_token"] = HF_TOKEN
+
+                    diarize_pipeline = whisperx.DiarizationPipeline(**dp_kwargs)
                     if diarize_pipeline and getattr(diarize_pipeline, "model", None) is not None:
                         diarize_segments = diarize_pipeline(
                             audio_data,
