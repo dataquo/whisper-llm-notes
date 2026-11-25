@@ -4,6 +4,33 @@ All notable changes to the WHISPER project are documented in this file. The proj
 
 ---
 
+## [v07.03] - 2026-11-25
+### Added
+* **Architecture Decision Record 0018** (`docs/adr/0018-public-release-sanitization-governance-and-agpl-licensing.md`):
+  * Architectural documentation covering repository sanitization, project identity (`whisper-llm-notes`), open-source licensing evaluation (MIT vs. Apache 2.0 vs. BSL 1.1 vs. GNU AGPL-3.0), and DataQuo commercial licensing governance.
+* **Dual-Licensing Governance (GNU AGPL-3.0 + Commercial)**:
+  * Public release under GNU Affero General Public License v3.0 (AGPL-3.0). Guarantees freedom for individual and open-source use while requiring commercial SaaS providers to open-source their application stack or license a commercial exemption from DataQuo.
+* **Tracked macOS Setup Dependencies**:
+  * Added un-ignore pattern `!macos/requirements*.txt` in `.gitignore` to ensure `macos/requirements-macos.txt` is tracked and cloned by public contributors.
+
+### Fixed
+* **Storage Topology Neutralization**:
+  * Replaced all internal NAS references (`\\truenas\_DOWNLOADS_TEMP\...`) with vendor-neutral mock namespaces (`\\server\share\recordings\...`) in `tests/whisper-asr-service-docker.Tests.ps1`, `src/_MASTER_WHISPER.ps1`, and `src/whisper-asr-service-docker.ps1`.
+* **Template Redundancy**:
+  * Removed duplicate file `macos/env.example`, retaining canonical `macos/.env.example`.
+
+### Changed
+* **Repository Rebranding to `whisper-llm-notes`**:
+  * Renamed repository and updated README header and CI pipeline status badges to `dataquo/whisper-llm-notes`.
+  * Added 15 discoverability topic tags across the repository.
+* **Canonical Version Bump to v07.03**:
+  * Updated `$ScriptVersionNumber = "v07.03"` in `src/whisper-asr-service-docker.ps1`.
+  * Updated Comment-Based Help version metadata to `v07.03` in `src/_MASTER_WHISPER.ps1` and `src/whisper-asr-service-docker.ps1`.
+  * Updated service banner and OpenAPI version to `v07.03-mlx` in `macos/whisperx_mlx_server.py`.
+  * Updated test suite assertions in `tests/macos-crossplatform.Tests.ps1`.
+
+---
+
 ## [v07.02] - 2026-11-25
 ### Added
 * **Architecture Decision Record 0017** (`docs/adr/0017-cross-platform-dji-hallucination-suppression-unc-resilience.md`):

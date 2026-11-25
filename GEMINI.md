@@ -1,4 +1,4 @@
-# Antigravity Project Rules: WHISPER
+# Antigravity Project Rules: whisper-llm-notes
 
 ## 🚫 Git Operations & Version Control Policy
 * **NO AUTOMATIC COMMITS OR PUSHES**: The AI agent must **NEVER** run `git commit`, `git push`, `git tag`, `git merge`, or `git reset` commands.
@@ -18,7 +18,7 @@
 * **Deterministic Restarts**: Container lifecycle (`Ensure-WhisperContainerRunning`, `Restart-WhisperContainer`) strictly uses `$AppConfig.whisper_service.docker_container_name` and polls `/docs` or `/health` for readiness.
 
 ## 📊 Runtime Telemetry & Container Metadata Auditing
-* **Explicit Version Logging**: Maintain split `"script_name"` and `"script_version"` (`v07.02`) in all `.log` outputs; never revert to unversioned filename fallback.
+* **Explicit Version Logging**: Maintain split `"script_name"` and `"script_version"` (`v07.03`) in all `.log` outputs; never revert to unversioned filename fallback.
 * **Resilient Container Metadata**: `Get-WhisperContainerMetadata` must forward `$PipelineConfig` and use multi-tier inspection (Docker inspect $\to$ candidate scan fallback $\to$ HTTP `/openapi.json`) to guarantee zero-null telemetry logs.
 * **Silence & Zero-Speech Pipeline Invariants**: Empty segment responses from WhisperX (`segments.Count -eq 0`) must never abort script execution. Generate valid blank transcripts to avoid infinite retry loops in batch directory scans (ADR 0013).
 * **Untagged Filename Warnings**: Maintain high-visibility red warnings (`-ForegroundColor Red`) whenever a media file lacks profile tagging or explicit CLI parameters.
@@ -40,5 +40,11 @@
 * **Video Stream Bypass (`-vn`)**: Always specify `-vn` prior to audio filter processing in execution engine commands. Video streams in high-resolution recordings (1080p, 1440p/2K, 4K) must never be demuxed or decoded into RAM during audio extraction.
 * **Corrupted Packet & Cutfile Demuxer Tolerance**: Prepend `-err_detect ignore_err -fflags +genpts+igndts+discardcorrupt` to input arguments (`-i`). This prevents fatal demuxer abortions and 90+ second EOF freezing on truncated cutfile media (`.cutfile.`) or external storage read timeouts (`/Volumes/...`).
 * **Audio Profile & Normalization Invariants**: Audio DSP filters (`dynaudnorm`, `speechnorm`, `loudnorm`) and MP3 compression (`libmp3lame`) execute exclusively on a single CPU core (GPU utilization is expected to be 0%). Never strip loudness normalization (`-16 LUFS`, `TP=-1.5`) or profile filter chains to gain raw conversion speed; acoustic normalization is essential for ASR transcription stability and PyAnnote diarization accuracy (ADR 0016).
+
+## 🛡️ Public Release, Governance & Dual-Licensing Invariants
+* **Public Identity & Neutralized Mocks**: Canonical project is **`whisper-llm-notes`**. All test fixtures and docstrings must use generic mock paths (`\\server\share\...` or `C:\Users\test,user\...`). Never commit proprietary hostnames or private directories.
+* **Dual-Licensing Governance (GNU AGPL-3.0 + Commercial)**: Published under GNU AGPL-3.0 with commercial licensing rights exclusively retained by DataQuo (ADR 0018). Contributed changes must remain compatible with DataQuo's dual-licensing rights.
+* **macOS Dependency Tracking**: `.gitignore` must maintain the negative pattern `!macos/requirements*.txt` so public clones include automated setup requirements.
+
 
 

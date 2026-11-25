@@ -1,0 +1,22 @@
+# macOS Apple Silicon Requirements for Native MLX + PyTorch MPS WhisperX Server
+fastapi>=0.110.0
+uvicorn[standard]>=0.28.0
+python-multipart>=0.0.9
+python-dotenv>=1.0.1
+pydantic>=2.6.0
+
+# Apple MLX Framework for M2 Max Metal GPU ASR
+mlx>=0.12.0
+mlx-whisper>=0.4.1
+
+# PyTorch with Apple MPS (Metal Performance Shaders) Support
+torch>=2.2.0
+torchaudio>=2.2.0
+
+# Alignment & Diarization
+whisperx>=3.1.1
+pyannote.audio>=3.1.1
+huggingface_hub>=0.21.0
+transformers>=4.38.0
+soundfile>=0.12.1
+numpy>=1.24.0,<2.0.0

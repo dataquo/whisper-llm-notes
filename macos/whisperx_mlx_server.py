@@ -178,7 +178,7 @@ async def lifespan(app: FastAPI):
     masked_tok = f"{HF_TOKEN[:7]}...{HF_TOKEN[-4:]}" if (HF_TOKEN and len(HF_TOKEN) > 12) else ("None" if not HF_TOKEN else "Invalid")
     source_label = Path(env_source).name if env_source else "environment"
     print(f"============================================================")
-    print(f" WhisperX MLX ASR Service Started (v07.02)")
+    print(f" WhisperX MLX ASR Service Started (v07.03)")
     print(f" Hardware: Apple M2 Max Metal GPU (Unified Memory)")
     print(f" PyTorch Backend: {get_torch_device().upper()}")
     print(f" Default MLX Model: {MLX_MODEL_DEFAULT}")
@@ -205,7 +205,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="WhisperX MLX ASR Service",
     description="Drop-in native Apple Silicon (M2 Max) Metal/MPS GPU transcription service for WHISPER pipeline",
-    version="v07.02-mlx",
+    version="v07.03-mlx",
     lifespan=lifespan
 )
 

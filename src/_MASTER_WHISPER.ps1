@@ -103,10 +103,13 @@
     Performs only WhisperX audio transcription and secondary formats, bypassing LLM processing.
 
 .NOTES
-    Version: v07.02
+    Version: v07.03
+    - Public Release & Repository Rebranding: Official public launch as 'whisper-llm-notes' under GNU AGPL-3.0 with DataQuo commercial licensing.
+    - Sanitized UNC Network Paths & Test Mocks: Replaced internal storage share names with generic mock paths across test suites and engine comments.
+    - Tracked macOS Dependencies: Added exception to .gitignore to ensure macos/requirements-macos.txt is tracked in repository clones.
     - Dynamic Cross-Platform DJI Scene Resolution: Automatically defaults to 'special-quality-hw-opt-Apple_M2' (VideoToolbox) on macOS and 'special-quality-hw-dec-cuda' (CUDA) on Windows, with -DjiScene CLI override.
     - Anti-Hallucination ASR Decoding Invariant: Configured condition_on_previous_text=false across meeting profile and execution pipeline to eliminate runaway "Thank you." hallucination loops on silent screen captures and muted recordings.
-    - UNC Network Share Forward-Slash Normalization: Resolves curl exit code 26 on Windows by normalizing SMB paths (\\truenas\... -> //truenas/...) preventing quote-escaping corruption.
+    - UNC Network Share Forward-Slash Normalization: Resolves curl exit code 26 on Windows by normalizing SMB paths (\\server\share\... -> //server/share/...) preventing quote-escaping corruption.
     - FFmpeg Demuxer Resilience & Video Bypass: Execution engine incorporates -vn and -err_detect ignore_err -fflags +genpts+igndts+discardcorrupt to safely handle corrupted/truncated cutfiles and accelerate audio preprocessing.
     - Cross-Platform macOS Apple Silicon (M2 Max) Support: Enables native batch orchestration and engine delegation across Windows 11 and macOS pwsh environments.
     - Path Standardization: Enforced Join-Path across all transcript checks, missing file evaluation, and candidate resolution to prevent literal backslash artifacts on Unix systems.

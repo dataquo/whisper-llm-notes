@@ -1,9 +1,10 @@
-# WHISPER - Automated Batch Transcription & AI Summarization Pipeline
+# whisper-llm-notes: Batch Audio Transcription & AI Meeting Notes Pipeline
 
-[![CI Pipeline](https://github.com/dataquo/WHISPER/actions/workflows/ci.yml/badge.svg)](https://github.com/dataquo/WHISPER/actions/workflows/ci.yml)
+[![CI Pipeline](https://github.com/dataquo/whisper-llm-notes/actions/workflows/ci.yml/badge.svg)](https://github.com/dataquo/whisper-llm-notes/actions/workflows/ci.yml)
 [![PowerShell 7.0+](https://img.shields.io/badge/PowerShell-7.0%2B-blue.svg)](https://github.com/PowerShell/PowerShell)
 [![Docker](https://img.shields.io/badge/Docker-WhisperX-2496ED.svg)](https://www.docker.com/)
-[![Version](https://img.shields.io/badge/Version-v07.02-brightgreen.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-v07.03-brightgreen.svg)](CHANGELOG.md)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 
 A resilient, high-throughput batch audio transcription and AI summarization pipeline powered by **PowerShell 7+**, **FFmpeg**, **WhisperX (Docker & Apple MLX)**, **Ollama**, and **LM Studio**.
 
@@ -73,7 +74,7 @@ WHISPER/
 │   ├── convert_kinit_sk_to_mlx.py # Model conversion utility for Slovak weights
 │   ├── requirements-macos.txt   # Pinned Apple Silicon dependencies
 │   └── .env.example             # Hugging Face token template
-├── CHANGELOG.md                 # Release history and changelog (v01.00 to v07.02)
+├── CHANGELOG.md                 # Release history and changelog (v01.00 to v07.03)
 ├── AGENTS.md                    # Operating guidelines for AI coding agents
 ├── GEMINI.md                    # Project rules & manual Git policies
 ├── PSScriptAnalyzerSettings.psd1 # Linter rule definitions
@@ -183,3 +184,13 @@ Invoke-Pester -Path ./tests -Output Detailed
 
 > [!IMPORTANT]
 > All commits, merges, and pushes are performed manually by the human developer via **GitHub Desktop**. AI agents are strictly forbidden from running automated `git commit` or `git push` commands.
+
+---
+
+## 📄 License & Commercial Use
+
+This project is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)** — see the [LICENSE](LICENSE) file for details.
+
+* **Open-Source Community**: Free to use, inspect, modify, and run locally for personal, research, and non-commercial development.
+* **Commercial / Closed-Source SaaS Exemption**: If you wish to incorporate or run this pipeline within proprietary software, closed-source cloud services, or commercial SaaS offerings without releasing your platform's source code under AGPL-3.0, a commercial license is required.
+* **Inquiries**: For commercial licensing, enterprise support, or custom integrations, please contact **[DataQuo](https://dataquo.eu)** at `ceo@dataquo.eu`.

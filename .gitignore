@@ -23,6 +23,7 @@ TempProcessedFiles/
 *.json
 !config/*.json
 *.txt
+!macos/requirements*.txt
 *.srt
 *.tsv
 *.vtt

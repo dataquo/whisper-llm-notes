@@ -278,11 +278,16 @@ v07.01
 - Audio Preprocessing Acceleration: Eliminated tail-end I/O hangs (speeding up conversion from ~6x-8x to 22x-25x real-time sustained throughput) while preserving all DSP normalization invariants.
 
 v07.02
-- UNC Network Share Forward-Slash Normalization: Normalizes Windows SMB paths to forward slashes ($curlUploadFile = $TempProcessedFile -replace '\\', '/') before passing to curl, eliminating quote-escaping collision (curl exit code 26) on \\truenas\... network shares.
+- UNC Network Share Forward-Slash Normalization: Normalizes Windows SMB paths to forward slashes ($curlUploadFile = $TempProcessedFile -replace '\\', '/') before passing to curl, eliminating quote-escaping collision (curl exit code 26) on \\server\share\... network shares.
 - Anti-Hallucination ASR Decoding Baseline: Configured condition_on_previous_text=false in meeting profile to prevent silence and low-energy noise from triggering cascading "Thank you." hallucination loops.
 - Native MLX Anti-Hallucination & Gated Token Safety: Enforced condition_on_previous_text=False default, hallucination_silence_threshold=2.0, active speech floor, and phantom token pruning in macos/whisperx_mlx_server.py.
 - PyTorch 2.6+ OmegaConf Unpickler Hardening: Added all OmegaConf classes to safe_globals and enforced weights_only=False for trusted local checkpoints.
-- Dynamic Hub Diagnostics: Verified user identity and gated repo access (pyannote 3.1 & segmentation 3.0) on server startup.#>
+- Dynamic Hub Diagnostics: Verified user identity and gated repo access (pyannote 3.1 & segmentation 3.0) on server startup.
+
+v07.03
+- Public Release & Repository Rebranding: Official public launch as 'whisper-llm-notes' under GNU AGPL-3.0 with DataQuo commercial licensing.
+- Sanitized UNC Network Paths & Test Mocks: Replaced internal storage share names with generic mock paths across test suites and engine comments.
+- Tracked macOS Dependencies: Added exception to .gitignore to ensure macos/requirements-macos.txt is tracked in repository clones.#>
 
 
 
@@ -1035,7 +1040,7 @@ if ($ExtractedParams.SpeakerCount) {
 
 # --- 2b. Script Version Detection ---
 
-$ScriptVersionNumber = "v07.02"
+$ScriptVersionNumber = "v07.03"
 
 $ScriptName = if ($MyInvocation.MyCommand.Path) {
     [System.IO.Path]::GetFileName($MyInvocation.MyCommand.Path)
@@ -1667,7 +1672,7 @@ if (-not (Test-Path -LiteralPath "$FullBase.json")) {
     try {
         $curlBin = Get-PlatformBinaryName "curl"
         # Normalize slashes to forward slashes for curl file path to prevent UNC double-backslash
-        # escaping corruption (e.g. \\truenas\... -> curl exit code 26) while safely handling commas and spaces
+        # escaping corruption (e.g. \\server\share\... -> curl exit code 26) while safely handling commas and spaces
         $curlUploadFile = $TempProcessedFile -replace '\\', '/'
         $curlArgs = @(
             "-s", "-X", "POST", "$FullUrl",

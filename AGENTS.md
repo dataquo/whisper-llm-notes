@@ -31,12 +31,13 @@ WHISPER/
 ├── docs/
 │   ├── ARCHITECTURE.md          # End-to-end technical architecture & diagrams
 │   ├── WORKFLOW_GUIDE.md        # Operations & troubleshooting guide
-│   └── adr/                     # Architectural Decision Records (0001-0017)
+│   └── adr/                     # Architectural Decision Records (0001-0018)
 ├── .github/workflows/
 │   ├── ci.yml                   # PSScriptAnalyzer + Pester 5/6 CI pipeline
 │   └── release.yml              # Automated release packaging on tag push
-├── CHANGELOG.md                 # Full release history from v01.00 to v07.02
+├── CHANGELOG.md                 # Full release history from v01.00 to v07.03
 ├── GEMINI.md                    # Active rules (NO automatic git commits/pushes)
+├── LICENSE                      # GNU AGPL-3.0
 └── README.md                    # Project overview & quickstart
 ```
 
@@ -100,7 +101,7 @@ WHISPER/
 * **Regex Encoding Safety**: All regex pattern cleaning (such as in `Clean-TranscriptText`) must use explicit unicode escape sequences (e.g. `\u2013\u2014`) rather than literal em-dashes to avoid stripping Czech/Slovak diacritics under Windows default code pages.
 
 ### E. Script Versioning & Runtime Telemetry Auditing
-* **Canonical Script Version**: Maintain explicit constant `$ScriptVersionNumber = "v07.02"` and `$ScriptName = "whisper-asr-service-docker.ps1"`. Never re-introduce filename-based versioning for scripts inside `src/`.
+* **Canonical Script Version**: Maintain explicit constant `$ScriptVersionNumber = "v07.03"` and `$ScriptName = "whisper-asr-service-docker.ps1"`. Never re-introduce filename-based versioning for scripts inside `src/`.
 * **Telemetry Logging Invariants**: Both initial logs (`New-TranscriptionLog`) and completion summaries (`Write-CompletionSummary`) must write separate `"script_name"` and `"script_version"` properties.
 * **Container Metadata Forwarding (`Get-WhisperContainerMetadata`)**: Always forward `$PipelineConfig` into container inspection so machine-level overrides (`config.local.json`) are respected. Maintain the 3-tier inspection strategy (configured Docker inspect $\to$ candidate fallback $\to$ HTTP `/openapi.json`) to guarantee zero-null telemetry logs.
 * **LLM Service Version Auditing**: When integrating LLM summarization endpoints, query `/api/version` (guarded by a $\le 2\text{s}$ timeout) and record service version rows in markdown parameter tables.
@@ -120,6 +121,12 @@ WHISPER/
 * **Video Stream Bypass (`-vn`)**: Always specify `-vn` prior to audio filter processing in execution engine commands. Video streams in high-resolution recordings (1080p, 1440p/2K, 4K) must never be demuxed or decoded into RAM during audio extraction.
 * **Corrupted Packet & Cutfile Demuxer Tolerance**: Prepend `-err_detect ignore_err -fflags +genpts+igndts+discardcorrupt` to input arguments (`-i`). This prevents fatal demuxer abortions and 90+ second EOF freezing on truncated cutfile media (`.cutfile.`) or external storage read timeouts (`/Volumes/...`).
 * **Audio Profile & Normalization Invariants**: Audio DSP filters (`dynaudnorm`, `speechnorm`, `loudnorm`) and MP3 compression (`libmp3lame`) execute exclusively on a single CPU core (GPU utilization is expected to be 0%). Never strip loudness normalization (`-16 LUFS`, `TP=-1.5`) or profile filter chains to gain raw conversion speed; acoustic normalization is essential for ASR transcription stability and PyAnnote diarization accuracy (ADR 0016).
+
+### H. Public Release Standards, Privacy Neutralization & Dual-Licensing Invariants
+* **Public Repository Identity**: The canonical public project name is **`whisper-llm-notes`** (`https://github.com/dataquo/whisper-llm-notes`).
+* **Privacy & Network Share Sanitization**: All file paths in documentation, test suites, and script comments must utilize vendor-neutral mock roots (`\\server\share\...` or `C:\Users\test,user\...`). Never commit specific internal storage hostnames, private network directories, or local usernames.
+* **Dual-Licensing Model (GNU AGPL-3.0 + Commercial)**: The repository is published under GNU Affero General Public License v3.0 (AGPL-3.0). DataQuo retains sole commercial licensing authority for proprietary, closed-source SaaS exemptions. Community contributions and changes must never introduce licenses that infringe upon DataQuo's dual-licensing rights.
+* **Tracked Dependencies Invariant**: `.gitignore` must retain the negative pattern `!macos/requirements*.txt` to ensure external contributors cloning the repo receive all prerequisites for `setup_macos.sh`.
 
 ---
 

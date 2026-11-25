@@ -1,6 +1,6 @@
 # WHISPER Technical Architecture & Design
 
-This document details the end-to-end technical architecture, data processing pipeline, profile definitions, and service integrations of the **WHISPER** project (v07.02).
+This document details the end-to-end technical architecture, data processing pipeline, profile definitions, and service integrations of the **WHISPER** project (v07.03).
 
 ---
 
@@ -421,6 +421,23 @@ When transcribing media residing on TrueNAS or SMB network shares via Windows UN
   * A **Classic Read Token** is required to allow unrestricted read access across all composite pipeline dependencies.
 * **Proactive Startup Hub Verification**:
   * On server initialization, `whisperx_mlx_server.py` queries `whoami()` and actively tests accessibility against both gated repositories (`pyannote/speaker-diarization-3.1` and `pyannote/segmentation-3.0`), displaying explicit diagnostic status banners before processing requests.
+
+---
+
+## 13. Public Release Architecture & Dual-Licensing Governance (v07.03)
+
+As documented in [ADR 0018](file:///d:/_DOCUMENTS/_SCRIPTS/WHISPER/docs/adr/0018-public-release-sanitization-governance-and-agpl-licensing.md), v07.03 marks the formal transition from internal tooling to a public open-source project under the name **`whisper-llm-notes`** (`https://github.com/dataquo/whisper-llm-notes`).
+
+### A. Repository Sanitization & Privacy Standards
+* **Complete Git History Auditing**: Verified all 42 prior commits to guarantee zero exposure of personal names, emails, API keys, or private storage credentials.
+* **Storage Topology Neutralization**: Replaced all private network share roots (`\\truenas\...`) with vendor-neutral mock namespaces (`\\server\share\...`) across test fixtures, Comment-Based Help, and engine inline comments.
+* **macOS Dependency Tracking**: Added a negative ignore pattern (`!macos/requirements*.txt`) to `.gitignore` to ensure `requirements-macos.txt` is tracked and cloned by public contributors.
+
+### B. Dual-Licensing Governance (GNU AGPL-3.0 + Commercial)
+* **Open-Source Core (GNU AGPL-3.0)**: Individual developers, academics, and homelab users can freely clone, run, modify, and contribute to the pipeline under AGPL-3.0.
+* **Cloud & SaaS Protection (Section 13)**: Commercial entities attempting to bundle or execute this pipeline as a network service (e.g. hosted transcription or SaaS meeting minutes) are legally bound to release their entire service source code under AGPL-3.0.
+* **Commercial Exemption by DataQuo**: Companies wishing to integrate the pipeline into proprietary, closed-source SaaS applications must license a commercial exemption directly from DataQuo.
+
 
 
 

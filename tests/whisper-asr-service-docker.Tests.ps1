@@ -334,9 +334,9 @@
 
     Context "Curl Multipart File Path Normalization (UNC and Special Characters)" {
         It "Converts Windows backslashes and UNC network share paths to forward slashes for curl" {
-            $uncPath = "\\truenas\_DOWNLOADS\_TEMP\_Screen_Recordings_Original\008\meeting recording [DQ].mp3"
+            $uncPath = "\\server\share\recordings\008\meeting recording [DQ].mp3"
             $normalized = $uncPath -replace '\\', '/'
-            $normalized | Should -Be "//truenas/_DOWNLOADS/_TEMP/_Screen_Recordings_Original/008/meeting recording [DQ].mp3"
+            $normalized | Should -Be "//server/share/recordings/008/meeting recording [DQ].mp3"
             
             $localPath = "C:\Users\test,user\Recordings\audio file.mp3"
             $normalizedLocal = $localPath -replace '\\', '/'

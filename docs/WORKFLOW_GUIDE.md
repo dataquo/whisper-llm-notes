@@ -1,6 +1,6 @@
 # WHISPER Operational Runbook & Workflow Guide
 
-This guide provides practical instructions for daily operations, troubleshooting, testing, and developing within the **WHISPER** repository (v07.02).
+This guide provides practical instructions for daily operations, troubleshooting, testing, and developing within the **whisper-llm-notes** repository (v07.03).
 
 ---
 
