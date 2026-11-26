@@ -103,7 +103,11 @@
     Performs only WhisperX audio transcription and secondary formats, bypassing LLM processing.
 
 .NOTES
-    Version: v07.03
+    Version: v07.04
+    - Transcode Duplicate Suppression & Base Transcript Lookup: Evaluates active folder source files and existing base transcripts ($baseWithoutDjiSuffix.json, .NOTES.md, etc.) to eliminate duplicate transcription of converted WebM files and intermediate .mp3 files.
+    - Quarantine Folder Isolation: Excludes _TO_DELETE_ and _ORIGINALS_ from active media checks so fresh transcode batches lacking transcripts process through Whisper without manual intervention.
+    - Companion Cleanup Resilience: Aligned with DJI LogFolderValidateAndZip.ps1 ExifTool header discrimination (---- ExifTool ----) to ensure metadata logs are archived to category ZIPs while preserving Whisper transcripts having companion formats.
+    - Diagnostic Documentation: Documented benign macOS Apple Silicon diagnostics (MallocStackLogging notices and FFmpeg Opus packet header probing artifacts).
     - Public Release & Repository Rebranding: Official public launch as 'whisper-llm-notes' under GNU AGPL-3.0 with DataQuo commercial licensing.
     - Sanitized UNC Network Paths & Test Mocks: Replaced internal storage share names with generic mock paths across test suites and engine comments.
     - Tracked macOS Dependencies: Added exception to .gitignore to ensure macos/requirements-macos.txt is tracked in repository clones.
@@ -344,13 +348,15 @@ Invoke-DjiConversion -TargetFolder $InputFolder -ExplicitScriptPath $DjiScriptPa
 $AudioFiles = @()
 
 # Check for original audio files (.m4a, .flac, .mp4, .mp3, .webm), excluding normalized intermediate files
-# and duplicate converted DJI WebM files when original source media is present
+# and duplicate converted DJI WebM files when original source media or base transcripts are present
 $OriginalAudioFiles = Get-ChildItem -Path $InputFolder -File -ErrorAction SilentlyContinue | Where-Object {
     if ($_.Extension.ToLower() -notin $AudioExtensions) { return $false }
     if ($_.Name -match '\.(PHONE-NORM_|MEETING-NORM_|DISTANT-NORM_|HALLWAY-NORM_|ECHOED-NORM_)') { return $false }
 
     if ($_.Name -match '(\.CRF-\d+|_CRF\d+|[\._]LIBSVT-AV1)') {
         $baseWithoutDjiSuffix = $_.Name -replace '(\.CRF-\d+|_CRF\d+|[\._]LIBSVT-AV1).*$', ''
+        
+        # 1. Check if original source media exists directly in current folder
         $hasOriginalMedia = $false
         foreach ($candExt in @(".mp4", ".mov", ".m4a", ".flac", ".mp3", ".webm")) {
             $candPath = Join-Path $_.DirectoryName "$baseWithoutDjiSuffix$candExt"
@@ -359,7 +365,21 @@ $OriginalAudioFiles = Get-ChildItem -Path $InputFolder -File -ErrorAction Silent
                 break
             }
         }
-        if ($hasOriginalMedia) { return $false }
+
+        # 2. Check if transcripts for the base filename already exist in current folder
+        $hasBaseTranscripts = $false
+        foreach ($candExt in @(".json", ".NOTES.md", ".SUMMARY.md", ".srt", ".tsv", ".vtt", ".txt")) {
+            $candTranscriptPath = Join-Path $_.DirectoryName "$baseWithoutDjiSuffix$candExt"
+            if (Test-Path -LiteralPath $candTranscriptPath) {
+                $content = Get-Content -LiteralPath $candTranscriptPath -Raw -ErrorAction SilentlyContinue
+                if (-not [string]::IsNullOrWhiteSpace($content)) {
+                    $hasBaseTranscripts = $true
+                    break
+                }
+            }
+        }
+
+        if ($hasOriginalMedia -or $hasBaseTranscripts) { return $false }
     }
 
     return $true
@@ -425,6 +445,21 @@ if ($ProcessedFiles) {
                 if (-not [string]::IsNullOrEmpty($Content)) {
                     $HasTranscript = $true
                     break
+                }
+            }
+        }
+
+        # If $Base contains a DJI conversion suffix, also check if base recording transcripts exist
+        if (-not $HasTranscript -and ($Base -match '(\.CRF-\d+|_CRF\d+|[\._]LIBSVT-AV1)')) {
+            $baseWithoutDjiSuffix = $Base -replace '(\.CRF-\d+|_CRF\d+|[\._]LIBSVT-AV1).*$', ''
+            foreach ($ext in @('.json', '.txt', '.srt', '.tsv', '.vtt', '.md')) {
+                $CheckPath = Join-Path $PFile.DirectoryName "$baseWithoutDjiSuffix$ext"
+                if (Test-Path -LiteralPath $CheckPath) {
+                    $Content = Get-Content -LiteralPath $CheckPath -Raw -ErrorAction SilentlyContinue
+                    if (-not [string]::IsNullOrEmpty($Content)) {
+                        $HasTranscript = $true
+                        break
+                    }
                 }
             }
         }

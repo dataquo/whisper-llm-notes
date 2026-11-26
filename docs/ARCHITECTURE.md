@@ -1,6 +1,6 @@
 # WHISPER Technical Architecture & Design
 
-This document details the end-to-end technical architecture, data processing pipeline, profile definitions, and service integrations of the **WHISPER** project (v07.03).
+This document details the end-to-end technical architecture, data processing pipeline, profile definitions, and service integrations of the **WHISPER** project (v07.04).
 
 ---
 
@@ -289,7 +289,9 @@ When video conversion completes, each `.mp4` generates a companion WebM file:
 ```text
 <BaseName>.CRF-<crf>_<parametersVideoSufix>_<resolution>.webm
 ```
-* **Duplicate Suppression**: `_MASTER_WHISPER.ps1` scans the folder and identifies files matching `(\.CRF-\d+|_CRF\d+|[\._]LIBSVT-AV1)`. If an original source media file (`.mp4`, `.mov`, `.m4a`, `.flac`, `.mp3`) with the matching base name is present, the `.webm` transcode is excluded from audio candidate queues, eliminating redundant processing.
+* **Active Folder Original Media Check**: `_MASTER_WHISPER.ps1` scans the active directory and identifies files matching `(\.CRF-\d+|_CRF\d+|[\._]LIBSVT-AV1)`. If an original source media file (`.mp4`, `.mov`, `.m4a`, `.flac`, `.mp3`) with the matching base name is present directly in `$_.DirectoryName`, the `.webm` transcode is excluded from audio candidate queues, eliminating redundant processing.
+* **Base Transcript Lookup**: If original media was already moved to `_TO_DELETE_\` or removed, the orchestrator checks whether non-empty transcripts (`.json`, `.NOTES.md`, `.SUMMARY.md`, `.srt`, `.tsv`, `.vtt`, `.txt`) exist for `$baseWithoutDjiSuffix`. If base transcripts exist, the WebM is suppressed. If no base transcripts exist, the WebM is retained and queued for transcription (ADR 0019).
+* **Intermediate Audio Guard**: Candidate filtering verifies intermediate `.mp3` files against `$baseWithoutDjiSuffix` to prevent re-transcription while preserving `.mp3` files in storage for user playback.
 ---
 
 ## 10. macOS Apple Silicon (M2 Max) Native Acceleration Architecture
@@ -437,6 +439,33 @@ As documented in [ADR 0018](file:///d:/_DOCUMENTS/_SCRIPTS/WHISPER/docs/adr/0018
 * **Open-Source Core (GNU AGPL-3.0)**: Individual developers, academics, and homelab users can freely clone, run, modify, and contribute to the pipeline under AGPL-3.0.
 * **Cloud & SaaS Protection (Section 13)**: Commercial entities attempting to bundle or execute this pipeline as a network service (e.g. hosted transcription or SaaS meeting minutes) are legally bound to release their entire service source code under AGPL-3.0.
 * **Commercial Exemption by DataQuo**: Companies wishing to integrate the pipeline into proprietary, closed-source SaaS applications must license a commercial exemption directly from DataQuo.
+
+---
+
+## 14. Transcode Duplicate Suppression, Companion Cleanup Resilience, and ExifTool Log Discrimination (v07.04)
+
+As documented in [ADR 0019](file:///d:/_DOCUMENTS/_SCRIPTS/WHISPER/docs/adr/0019-transcode-duplicate-suppression-and-companion-cleanup-resilience.md), v07.04 resolves multi-stage pipeline integration edge cases across external video transcoding (`convert_DJI_videos_with_MetaData.ps1`), log cleanup (`LogFolderValidateAndZip.ps1`), and ASR orchestrator batch queuing.
+
+### A. The Three-Scenario Transcode Queuing Invariant
+To ensure robust, non-redundant media ingestion without human intervention:
+
+| Scenario | Input Directory State | Orchestrator Action | Architectural Reason |
+| :--- | :--- | :--- | :--- |
+| **1. Unconverted Media** | Source `.mp4` and converted `.webm` both in active folder | Exclude `.webm`, transcribe `.mp4` | Avoids duplicate ASR processing; source MP4 has primary quality |
+| **2. Fresh Post-Conversion** | Converted `.webm` in active folder, source `.mp4` in `_TO_DELETE_\`, 0 transcripts | **Retain & Transcribe `.webm`** | Video was freshly transcoded and validated; transcribing `.webm` completes the pipeline |
+| **3. Pre-Transcribed Media** | Converted `.webm` in active folder, source `.mp4` in `_TO_DELETE_\`, base transcripts present | Exclude `.webm` | Recording was already transcribed under base name (e.g. `recording.CS-M2.NOTES.md`); suppresses duplicate notes |
+
+### B. Content-Header Discrimination for Companion Cleanup (`LogFolderValidateAndZip.ps1`)
+ExifTool outputs metadata dumps into `$baseName.txt` for every converted video file. To guarantee that `LogFolderValidateAndZip.ps1` archives these dumps into the category ZIP archive without endangering genuine Whisper ASR `.txt` transcripts:
+1. **Header Inspection (`Get-Content -TotalCount 5`)**: Files starting with `---- ExifTool ----` or containing `ExifTool Version Number` are immediately identified as ExifTool metadata dumps, added to the category ZIP, and purged from the source folder.
+2. **Companion Format Guard**: A `.txt` file is treated as a Whisper ASR transcript and shielded from zipping/deletion only when companion transcript formats (`.json`, `.NOTES.md`, `.SUMMARY.md`, `.srt`, `.vtt`, `.tsv`) exist for the same base name.
+3. **Elimination of Fallback Heuristics**: The legacy fallback checking for `.mp4` files in `_TO_DELETE_` was removed, preventing metadata dumps from masquerading as speech transcripts.
+
+### C. Benign macOS Runtime Diagnostics
+Cross-platform deployments on macOS Apple Silicon may emit the following informational messages:
+* `MallocStackLogging: can't turn off malloc stack logging because it was not enabled`: macOS system diagnostic when processes spawn without explicit malloc logging. Completely harmless.
+* `[opus @ ...] Error parsing Opus packet header`: Demuxer probing artifact on WebM Opus streams where stream recovery is automatic via `-err_detect ignore_err`. Zero audio or data loss occurs.
+
 
 
 

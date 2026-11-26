@@ -1,6 +1,6 @@
 # WHISPER Operational Runbook & Workflow Guide
 
-This guide provides practical instructions for daily operations, troubleshooting, testing, and developing within the **whisper-llm-notes** repository (v07.03).
+This guide provides practical instructions for daily operations, troubleshooting, testing, and developing within the **whisper-llm-notes** repository (v07.04).
 
 ---
 
@@ -31,7 +31,7 @@ pwsh -File .\src\_MASTER_WHISPER.ps1 -InputFolder "D:\Recordings\2026-August"
 
 * The script automatically invokes `..\DJI\convert_DJI_videos_with_MetaData.ps1` with dynamic platform-aware hardware decoding (`special-quality-hw-opt-Apple_M2` on macOS or `special-quality-hw-dec-cuda` on Windows) and `-checkAudioSilence "0"` prior to scanning.
 * The script automatically skips any audio file whose transcripts (`.json`, `.txt`, `.srt`, `.tsv`, `.vtt`, `.NOTES.md`, `.SUMMARY.md`) already exist and are non-empty.
-* Converted WebM files (`*.CRF-*_LIBSVT-AV1*.webm`) are automatically suppressed if original source media is present.
+* Converted WebM files (`*.CRF-*_LIBSVT-AV1*.webm`) are automatically suppressed if original source media is present or if base transcripts already exist (see ADR 0019). Freshly converted WebMs without prior transcripts (with source MP4 in `_TO_DELETE_\`) are queued and transcribed seamlessly.
 * If only markdown notes are missing, it selectively runs LLM inference without re-running audio transcription.
 
 ### Video Pre-Processing Controls
@@ -276,3 +276,8 @@ Invoke-ScriptAnalyzer -Path ./src -Recurse -Settings ./PSScriptAnalyzerSettings.
 | `Processed audio file not found` / missing FFmpeg log warnings on files with `[...]` | PowerShell `-Path` treating square brackets as wildcard globbing pattern | Enforce `-LiteralPath` across all PowerShell provider cmdlets (`Test-Path`, `Get-Content`, `Move-Item`, `Get-Item`). Resolved in v06.04 (see ADR 0012). |
 | `FFmpeg stalls at EOF with 'Packet corrupt', 'partial file', or 'Input/output error'` | Truncated video cut-point (`.cutfile.`) or external storage read timeout at end of stream | Handled automatically in v07.01 via `-err_detect ignore_err -fflags +genpts+igndts+discardcorrupt` and `-vn` (see ADR 0016). Non-fatal corrupt packets are dropped immediately. |
 | `Audio conversion speed starts at ~25x but slows to ~7x` | FFmpeg cumulative speed averaging, single-core CPU DSP limits, or external drive (`/Volumes/...`) bus saturation | Audio DSP runs on 1 CPU core; reading/writing to external drives saturates USB/network bandwidth. Using `-vn` (v07.01) bypasses video demuxing, sustaining 20x–25x on local SSDs. |
+| Converted WebM creates duplicate `.NOTES.md` and `.json` notes | Orchestrator evaluated markdown files strictly against full transcode filename | Fixed in v07.04: `_MASTER_WHISPER.ps1` checks whether base transcripts (`$baseWithoutDjiSuffix.json`, `.NOTES.md`) already exist. If found, duplicate WebM transcribes are suppressed (ADR 0019). |
+| Master orchestrator finds 0 files to process on fresh conversions | Converted MP4 moved to `_TO_DELETE_\` triggered legacy over-suppression | Fixed in v07.04: `_MASTER_WHISPER.ps1` excludes quarantine subfolders (`_TO_DELETE_`) from active media checks. Fresh transcodes without existing transcripts are transcribed (ADR 0019). |
+| ExifTool metadata dump `.txt` files left in folder after cleanup | `LogFolderValidateAndZip.ps1` misclassified `.txt` dumps as Whisper transcripts due to matching `.mp4` in `_TO_DELETE_` | Fixed in v07.04: Added fast header inspection (`---- ExifTool ----`). ExifTool metadata dumps are archived to category ZIPs, while Whisper transcripts with companion files (`.json`, `.NOTES.md`) are kept in source (ADR 0019). |
+| `MallocStackLogging: can't turn off malloc stack logging because it was not enabled` on macOS | Informational notice emitted by macOS `libsystem_malloc.dylib` when child processes spawn without malloc logging | Completely harmless system diagnostic. Can be safely ignored. |
+| `[opus @ ...] Error parsing Opus packet header` | FFmpeg demuxer probing artifact on WebM Opus streams during demuxer initialization | Harmless parsing artifact. Demuxer recovers immediately via `-err_detect ignore_err`; zero packet loss occurs. |

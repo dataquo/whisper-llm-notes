@@ -4,6 +4,37 @@ All notable changes to the WHISPER project are documented in this file. The proj
 
 ---
 
+## [v07.04] - 2026-11-26
+### Added
+* **Architecture Decision Record 0019** (`docs/adr/0019-transcode-duplicate-suppression-and-companion-cleanup-resilience.md`):
+  * Architectural documentation covering transcode duplicate suppression invariants, companion cleanup resilience, ExifTool metadata dump log discrimination, and macOS Apple Silicon diagnostic evaluations.
+* **Base-Transcript Duplicate Suppression for Transcoded Media**:
+  * In `src/_MASTER_WHISPER.ps1`, converted WebM files (`*.CRF-*_LIBSVT-AV1*.webm`) and intermediate preprocessed audio files check if base transcripts (`$baseWithoutDjiSuffix.json`, `.NOTES.md`, `.SUMMARY.md`, `.srt`, `.tsv`, `.vtt`, `.txt`) already exist in the target directory. If present, redundant secondary transcription is suppressed, eliminating double notes generation and preventing duplicate LLM API costs.
+* **Fresh Transcode Support with Quarantine Isolation**:
+  * Excluded quarantine subfolders (`_TO_DELETE_`, `_ORIGINALS_`) from the active media check in `src/_MASTER_WHISPER.ps1`. When external video transcoding moves original MP4s to `_TO_DELETE_\` and no prior transcripts exist (e.g. fresh batch conversion), the converted WebM is retained and queued for transcription, preventing pipeline stalls.
+* **ExifTool Metadata Dump vs. Whisper Transcript Discrimination**:
+  * In `DJI/LogFolderValidateAndZip.ps1`, added fast content header inspection (`Get-Content -TotalCount 5` matching `---- ExifTool ----` or `ExifTool Version Number`) to immediately classify ExifTool metadata text dumps as logs to be archived into the category ZIP and deleted from the source folder.
+  * Preserved Whisper ASR `.txt` transcripts in the active folder whenever companion transcript formats (`.json`, `.NOTES.md`, `.SUMMARY.md`, `.srt`, `.vtt`, `.tsv`) exist for the same base name.
+  * Eliminated the legacy fallback check that inspected `.mp4` presence in `_TO_DELETE_\`, which previously caused all ExifTool text dumps to be misclassified as Whisper transcripts and left unzipped.
+* **Expanded Pester Unit Tests**:
+  * Added 4 test scenarios to `tests/_MASTER_WHISPER.Tests.ps1` verifying all permutations of duplicate suppression (active source MP4 present, MP4 in `_TO_DELETE_` without transcripts, MP4 in `_TO_DELETE_` with base transcripts, and standalone WebMs).
+
+### Fixed
+* **Double Notes Generation on Pre-Transcribed Video Batches**:
+  * Fixed bug where running `_MASTER_WHISPER.ps1` with video conversion on folders containing existing notes generated duplicate summaries (`...CRF-44...NOTES.md` alongside `.NOTES.md`).
+* **Zero Audio Files Found on Fresh Transcoded Folders**:
+  * Fixed bug where `_MASTER_WHISPER.ps1` reported `Found 0 audio file(s) to process` on folders freshly transcoded by DJI scripts because source media was detected in `_TO_DELETE_\`.
+* **Unarchived ExifTool Metadata Dumps in Source Directories**:
+  * Fixed bug where `LogFolderValidateAndZip.ps1` left `$baseName.txt` ExifTool metadata logs behind in source folders after validation and archiving.
+
+### Changed
+* **Canonical Version Bump to v07.04**:
+  * Updated `$ScriptVersionNumber = "v07.04"` in `src/whisper-asr-service-docker.ps1`.
+  * Updated Comment-Based Help version metadata to `v07.04` in `src/_MASTER_WHISPER.ps1` and `src/whisper-asr-service-docker.ps1`.
+  * Updated test suite assertions in `tests/macos-crossplatform.Tests.ps1`.
+
+---
+
 ## [v07.03] - 2026-11-25
 ### Added
 * **Architecture Decision Record 0018** (`docs/adr/0018-public-release-sanitization-governance-and-agpl-licensing.md`):

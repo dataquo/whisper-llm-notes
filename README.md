@@ -3,7 +3,7 @@
 [![CI Pipeline](https://github.com/dataquo/whisper-llm-notes/actions/workflows/ci.yml/badge.svg)](https://github.com/dataquo/whisper-llm-notes/actions/workflows/ci.yml)
 [![PowerShell 7.0+](https://img.shields.io/badge/PowerShell-7.0%2B-blue.svg)](https://github.com/PowerShell/PowerShell)
 [![Docker](https://img.shields.io/badge/Docker-WhisperX-2496ED.svg)](https://www.docker.com/)
-[![Version](https://img.shields.io/badge/Version-v07.03-brightgreen.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-v07.04-brightgreen.svg)](CHANGELOG.md)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 
 A resilient, high-throughput batch audio transcription and AI summarization pipeline powered by **PowerShell 7+**, **FFmpeg**, **WhisperX (Docker & Apple MLX)**, **Ollama**, and **LM Studio**.
@@ -14,7 +14,7 @@ A resilient, high-throughput batch audio transcription and AI summarization pipe
 
 * **Cross-Platform Execution (Windows 11 & macOS Apple Silicon M2 Max)**: Runs with 100% native GPU acceleration on both Windows 11 (NVIDIA CUDA via Docker) and macOS (Apple Silicon M2 Max via native `mlx-whisper` Metal GPU and PyTorch MPS). Single PowerShell codebase for both operating systems.
 * **Smart Batch Orchestration**: Automatically scans folders for media files, inspects existing output formats, and executes only missing stages without redundant re-transcriptions.
-* **External Video Pre-Processing Orchestration**: Integrates companion video conversion (`..\DJI\convert_DJI_videos_with_MetaData.ps1`) to transcode high-resolution captures via SVT-AV1 preset 2 (`CRF 44`), Opus audio, and dynamic hardware decoding (Apple VideoToolbox on macOS, NVIDIA CUDA on Windows) prior to ASR. Includes smart duplicate suppression for converted `.webm` files and CLI control via `-SkipDJI` and `-DjiScene`.
+* **External Video Pre-Processing Orchestration**: Integrates companion video conversion (`..\DJI\convert_DJI_videos_with_MetaData.ps1`) to transcode high-resolution captures via SVT-AV1 preset 2 (`CRF 44`), Opus audio, and dynamic hardware decoding (Apple VideoToolbox on macOS, NVIDIA CUDA on Windows) prior to ASR. Includes smart duplicate suppression for converted `.webm` files (evaluating active files and existing base transcripts while honoring fresh transcodes with source MP4s in `_TO_DELETE_\`) and CLI control via `-SkipDJI` and `-DjiScene`.
 * **Multi-Tier Anti-Hallucination ASR Decoding**: Automatically prevents runaway hallucination loops (e.g. infinite `"Thank you"` or `"Thanks for watching"` cascades on muted recordings or quiet pauses) via `condition_on_previous_text: false`, `hallucination_silence_threshold=2.0`, Stage 0 VAD duration flooring, and Stage 2 forced alignment phantom segment pruning.
 * **Network Storage & UNC Share Resilience**: Automatically normalizes Windows network share paths to forward slashes (`//server/share/...`) for `curl.exe` multipart uploads, eliminating `curl: (26)` argument corruption when processing audio from TrueNAS or SMB shares.
 * **Intelligent Filename Tagging**: Automatically detects language, DSP profile, and speaker counts directly from file naming patterns (e.g. `recording.SK-E2.mp4`), resilient against video transcode suffixes (`.CRF-44_LIBSVT-AV1...`).

@@ -287,7 +287,13 @@ v07.02
 v07.03
 - Public Release & Repository Rebranding: Official public launch as 'whisper-llm-notes' under GNU AGPL-3.0 with DataQuo commercial licensing.
 - Sanitized UNC Network Paths & Test Mocks: Replaced internal storage share names with generic mock paths across test suites and engine comments.
-- Tracked macOS Dependencies: Added exception to .gitignore to ensure macos/requirements-macos.txt is tracked in repository clones.#>
+- Tracked macOS Dependencies: Added exception to .gitignore to ensure macos/requirements-macos.txt is tracked in repository clones.
+
+v07.04
+- Transcode Duplicate Suppression: Integrated base-transcript and active-folder checks in batch orchestrator to eliminate redundant re-transcriptions and duplicate notes on converted WebM media.
+- Fresh Transcode Ingestion: Decoupled quarantine subfolders (_TO_DELETE_) from active media checks, ensuring fresh transcodes without transcripts are processed cleanly.
+- Companion Cleanup Discrimination: Aligned with DJI LogFolderValidateAndZip.ps1 header discrimination (---- ExifTool ----) to archive metadata dumps while safeguarding Whisper ASR transcripts having companion formats (.json, .NOTES.md).
+- Diagnostic Documentation: Documented benign macOS Apple Silicon diagnostics (MallocStackLogging notices and FFmpeg Opus packet header probing artifacts).#>
 
 
 
@@ -1040,7 +1046,7 @@ if ($ExtractedParams.SpeakerCount) {
 
 # --- 2b. Script Version Detection ---
 
-$ScriptVersionNumber = "v07.03"
+$ScriptVersionNumber = "v07.04"
 
 $ScriptName = if ($MyInvocation.MyCommand.Path) {
     [System.IO.Path]::GetFileName($MyInvocation.MyCommand.Path)

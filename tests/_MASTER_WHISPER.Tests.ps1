@@ -310,7 +310,17 @@ Param(
                             break
                         }
                     }
-                    if ($hasOriginalMedia) { return $false }
+
+                    $hasBaseTranscripts = $false
+                    foreach ($candExt in @(".json", ".NOTES.md", ".SUMMARY.md", ".srt", ".tsv", ".vtt", ".txt")) {
+                        $candTranscriptPath = Join-Path $_.DirectoryName "$baseWithoutDjiSuffix$candExt"
+                        if (Test-Path -LiteralPath $candTranscriptPath) {
+                            $hasBaseTranscripts = $true
+                            break
+                        }
+                    }
+
+                    if ($hasOriginalMedia -or $hasBaseTranscripts) { return $false }
                 }
 
                 return $true
@@ -320,7 +330,94 @@ Param(
             $items[0].Name | Should -Be "2026-10-10 PerDiemoEU.EN-M1.mp4"
         }
 
-        It "Retains converted WebM file when original source MP4 does not exist" {
+        It "Retains converted WebM file when original source MP4 exists in _TO_DELETE_ quarantine and no transcripts exist" {
+            $toDeleteDir = Join-Path $TestMediaDir "_TO_DELETE_"
+            New-Item -ItemType Directory -Path $toDeleteDir -Force | Out-Null
+            $mp4File = Join-Path $toDeleteDir "2026-10-10 PerDiemoEU.EN-M1.mp4"
+            $webmFile = Join-Path $TestMediaDir "2026-10-10 PerDiemoEU.EN-M1.CRF-44_LIBSVT-AV1_P2_SO_HW-DEC-CUDA_5120x1440.webm"
+            Set-Content -LiteralPath $mp4File -Value "dummy" -Encoding UTF8
+            Set-Content -LiteralPath $webmFile -Value "dummy" -Encoding UTF8
+
+            $audioExtensions = @(".m4a", ".flac", ".mp4", ".mp3", ".webm")
+            $items = Get-ChildItem -LiteralPath $TestMediaDir -File | Where-Object {
+                if ($_.Extension.ToLower() -notin $audioExtensions) { return $false }
+                if ($_.Name -match '\.(PHONE-NORM_|MEETING-NORM_|DISTANT-NORM_|HALLWAY-NORM_|ECHOED-NORM_)') { return $false }
+
+                if ($_.Name -match '(\.CRF-\d+|_CRF\d+|[\._]LIBSVT-AV1)') {
+                    $baseWithoutDjiSuffix = $_.Name -replace '(\.CRF-\d+|_CRF\d+|[\._]LIBSVT-AV1).*$', ''
+                    $hasOriginalMedia = $false
+                    foreach ($candExt in @(".mp4", ".mov", ".m4a", ".flac", ".mp3", ".webm")) {
+                        $candPath = Join-Path $_.DirectoryName "$baseWithoutDjiSuffix$candExt"
+                        if ($candPath -ne $_.FullName -and (Test-Path -LiteralPath $candPath)) {
+                            $hasOriginalMedia = $true
+                            break
+                        }
+                    }
+
+                    $hasBaseTranscripts = $false
+                    foreach ($candExt in @(".json", ".NOTES.md", ".SUMMARY.md", ".srt", ".tsv", ".vtt", ".txt")) {
+                        $candTranscriptPath = Join-Path $_.DirectoryName "$baseWithoutDjiSuffix$candExt"
+                        if (Test-Path -LiteralPath $candTranscriptPath) {
+                            $hasBaseTranscripts = $true
+                            break
+                        }
+                    }
+
+                    if ($hasOriginalMedia -or $hasBaseTranscripts) { return $false }
+                }
+
+                return $true
+            }
+
+            $items.Count | Should -Be 1
+            $items[0].Name | Should -Be "2026-10-10 PerDiemoEU.EN-M1.CRF-44_LIBSVT-AV1_P2_SO_HW-DEC-CUDA_5120x1440.webm"
+        }
+
+        It "Excludes converted WebM file when base transcripts exist and original MP4 is in _TO_DELETE_" {
+            $toDeleteDir = Join-Path $TestMediaDir "_TO_DELETE_"
+            New-Item -ItemType Directory -Path $toDeleteDir -Force | Out-Null
+            $mp4File = Join-Path $toDeleteDir "2026-10-10 PerDiemoEU.EN-M1.mp4"
+            $notesFile = Join-Path $TestMediaDir "2026-10-10 PerDiemoEU.EN-M1.NOTES.md"
+            $webmFile = Join-Path $TestMediaDir "2026-10-10 PerDiemoEU.EN-M1.CRF-44_LIBSVT-AV1_P2_SO_HW-DEC-CUDA_5120x1440.webm"
+            Set-Content -LiteralPath $mp4File -Value "dummy" -Encoding UTF8
+            Set-Content -LiteralPath $notesFile -Value "# Notes" -Encoding UTF8
+            Set-Content -LiteralPath $webmFile -Value "dummy" -Encoding UTF8
+
+            $audioExtensions = @(".m4a", ".flac", ".mp4", ".mp3", ".webm")
+            $items = Get-ChildItem -LiteralPath $TestMediaDir -File | Where-Object {
+                if ($_.Extension.ToLower() -notin $audioExtensions) { return $false }
+                if ($_.Name -match '\.(PHONE-NORM_|MEETING-NORM_|DISTANT-NORM_|HALLWAY-NORM_|ECHOED-NORM_)') { return $false }
+
+                if ($_.Name -match '(\.CRF-\d+|_CRF\d+|[\._]LIBSVT-AV1)') {
+                    $baseWithoutDjiSuffix = $_.Name -replace '(\.CRF-\d+|_CRF\d+|[\._]LIBSVT-AV1).*$', ''
+                    $hasOriginalMedia = $false
+                    foreach ($candExt in @(".mp4", ".mov", ".m4a", ".flac", ".mp3", ".webm")) {
+                        $candPath = Join-Path $_.DirectoryName "$baseWithoutDjiSuffix$candExt"
+                        if ($candPath -ne $_.FullName -and (Test-Path -LiteralPath $candPath)) {
+                            $hasOriginalMedia = $true
+                            break
+                        }
+                    }
+
+                    $hasBaseTranscripts = $false
+                    foreach ($candExt in @(".json", ".NOTES.md", ".SUMMARY.md", ".srt", ".tsv", ".vtt", ".txt")) {
+                        $candTranscriptPath = Join-Path $_.DirectoryName "$baseWithoutDjiSuffix$candExt"
+                        if (Test-Path -LiteralPath $candTranscriptPath) {
+                            $hasBaseTranscripts = $true
+                            break
+                        }
+                    }
+
+                    if ($hasOriginalMedia -or $hasBaseTranscripts) { return $false }
+                }
+
+                return $true
+            }
+
+            $items.Count | Should -Be 0
+        }
+
+        It "Retains converted WebM file when neither original media nor base transcripts exist" {
             $webmFile = Join-Path $TestMediaDir "2026-10-10 PerDiemoEU.EN-M1.CRF-44_LIBSVT-AV1_P2_SO_HW-DEC-CUDA_5120x1440.webm"
             Set-Content -LiteralPath $webmFile -Value "dummy" -Encoding UTF8
 
@@ -339,7 +436,17 @@ Param(
                             break
                         }
                     }
-                    if ($hasOriginalMedia) { return $false }
+
+                    $hasBaseTranscripts = $false
+                    foreach ($candExt in @(".json", ".NOTES.md", ".SUMMARY.md", ".srt", ".tsv", ".vtt", ".txt")) {
+                        $candTranscriptPath = Join-Path $_.DirectoryName "$baseWithoutDjiSuffix$candExt"
+                        if (Test-Path -LiteralPath $candTranscriptPath) {
+                            $hasBaseTranscripts = $true
+                            break
+                        }
+                    }
+
+                    if ($hasOriginalMedia -or $hasBaseTranscripts) { return $false }
                 }
 
                 return $true

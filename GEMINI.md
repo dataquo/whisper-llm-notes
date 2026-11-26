@@ -9,7 +9,8 @@
 ## 🏛️ Architectural Decoupling & Single Source of Truth
 * **Single Source of Truth**: All PowerShell code lives exclusively in `src/`. Never create duplicate scripts in the root directory.
 * **Orchestrator Separation**: `src/_MASTER_WHISPER.ps1` is **ONLY** a batch orchestrator (folder scanning, parameter parsing, output checking, and external companion script delegation). NEVER put Docker lifecycle, container management, FFmpeg DSP, or config loading into `_MASTER_WHISPER.ps1`.
-* **External Pre-Processing & Duplicate Suppression**: Orchestrates `..\DJI\convert_DJI_videos_with_MetaData.ps1` via candidate resolution and bypass switch (`-SkipDJI`). Automatically selects platform-appropriate hardware decoding (`special-quality-hw-opt-Apple_M2` on macOS vs `special-quality-hw-dec-cuda` on Windows), configurable via `-DjiScene` (alias `-DjiProfile`). Automatically suppresses converted WebM outputs (`*.CRF-*_LIBSVT-AV1*.webm`) when original media exists to eliminate double transcription.
+* **External Pre-Processing & Duplicate Suppression**: Orchestrates `..\DJI\convert_DJI_videos_with_MetaData.ps1` via candidate resolution and bypass switch (`-SkipDJI`). Automatically selects platform-appropriate hardware decoding (`special-quality-hw-opt-Apple_M2` on macOS vs `special-quality-hw-dec-cuda` on Windows), configurable via `-DjiScene` (alias `-DjiProfile`). Automatically suppresses converted WebM outputs (`*.CRF-*_LIBSVT-AV1*.webm`) and intermediate `.mp3` files when original media or base transcripts exist, while isolating quarantine subfolders (`_TO_DELETE_`) to ensure fresh transcode batches are processed through Whisper without manual intervention (ADR 0019).
+* **Companion Cleanup & Log Discrimination**: When coordinating with companion cleanup (`LogFolderValidateAndZip.ps1`), ExifTool metadata text dumps (`---- ExifTool ----`) must be archived to category ZIPs, while genuine Whisper ASR `.txt` transcripts are preserved in the source folder whenever companion formats (`.json`, `.NOTES.md`, etc.) exist. Never rely on broad `.mp4` presence in `_TO_DELETE_` to shield `.txt` files.
 * **Execution Engine**: `src/whisper-asr-service-docker.ps1` is the self-contained execution engine handling single files, configuration layering, container lifecycle, FFmpeg DSP, WhisperX ASR, and LLM summarization.
 
 ## ⚙️ Configuration Layering & Deterministic Lifecycle
@@ -18,7 +19,7 @@
 * **Deterministic Restarts**: Container lifecycle (`Ensure-WhisperContainerRunning`, `Restart-WhisperContainer`) strictly uses `$AppConfig.whisper_service.docker_container_name` and polls `/docs` or `/health` for readiness.
 
 ## 📊 Runtime Telemetry & Container Metadata Auditing
-* **Explicit Version Logging**: Maintain split `"script_name"` and `"script_version"` (`v07.03`) in all `.log` outputs; never revert to unversioned filename fallback.
+* **Explicit Version Logging**: Maintain split `"script_name"` and `"script_version"` (`v07.04`) in all `.log` outputs; never revert to unversioned filename fallback.
 * **Resilient Container Metadata**: `Get-WhisperContainerMetadata` must forward `$PipelineConfig` and use multi-tier inspection (Docker inspect $\to$ candidate scan fallback $\to$ HTTP `/openapi.json`) to guarantee zero-null telemetry logs.
 * **Silence & Zero-Speech Pipeline Invariants**: Empty segment responses from WhisperX (`segments.Count -eq 0`) must never abort script execution. Generate valid blank transcripts to avoid infinite retry loops in batch directory scans (ADR 0013).
 * **Untagged Filename Warnings**: Maintain high-visibility red warnings (`-ForegroundColor Red`) whenever a media file lacks profile tagging or explicit CLI parameters.
